@@ -117,14 +117,14 @@ install(TARGETS
 
 # --- Install Unity Simulation binaries ---
 install(PROGRAMS
-  Simulation.x86_64
-  UnityPlayer.so
+  Simulator/Simulation.x86_64
+  Simulator/UnityPlayer.so
   DESTINATION lib/${PROJECT_NAME}
 )
 
 # --- Install Unity Simulation data folder ---
 install(DIRECTORY
-  ${CMAKE_CURRENT_SOURCE_DIR}/Simulation_Data
+  ${CMAKE_CURRENT_SOURCE_DIR}/Simulator/Simulation_Data
   DESTINATION lib/${PROJECT_NAME}
   USE_SOURCE_PERMISSIONS
 )
@@ -136,14 +136,14 @@ install(DIRECTORY launch
 
 # --- Install Unity Simulation binaries ---
 install(PROGRAMS
-  Simulation.x86_64
-  UnityPlayer.so
+  Simulator/Simulation.x86_64
+  Simulator/UnityPlayer.so
   DESTINATION share/${PROJECT_NAME}
 )
 
 # --- Install Unity Simulation data folder ---
 install(DIRECTORY
-  ${CMAKE_CURRENT_SOURCE_DIR}/Simulation_Data
+  ${CMAKE_CURRENT_SOURCE_DIR}/Simulator/Simulation_Data
   DESTINATION share/${PROJECT_NAME}
   USE_SOURCE_PERMISSIONS
 )
