@@ -42,6 +42,7 @@ class StateEstimateCorruptorNode : public rclcpp::Node {
 		corrupted_pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/pose_est", 1);
 		corrupted_velocity_pub_ = this->create_publisher<geometry_msgs::msg::TwistStamped>("/twist_est", 1);
 		corrupted_state_pub_ = this->create_publisher<nav_msgs::msg::Odometry>("/current_state_est", 1);
+		current_state_pub_ = this->create_publisher<nav_msgs::msg::Odometry>("current_state", 1);
 
 		// TF
 		tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
@@ -145,6 +146,7 @@ class StateEstimateCorruptorNode : public rclcpp::Node {
 		corrupted_state.pose.pose = pose_corrupted_.pose;
 
 		corrupted_state_pub_->publish(corrupted_state);
+		current_state_pub_->publish(corrupted_state);
 	}
 
 	void PublishCorruptedTwist(const geometry_msgs::msg::TwistStamped& twist) {
@@ -181,6 +183,7 @@ class StateEstimateCorruptorNode : public rclcpp::Node {
 	rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr corrupted_pose_pub_;
 	rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr corrupted_velocity_pub_;
 	rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr corrupted_state_pub_;
+	rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr current_state_pub_;
 
 	std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 	std::shared_ptr<tf2_ros::Buffer> tf_buffer_;

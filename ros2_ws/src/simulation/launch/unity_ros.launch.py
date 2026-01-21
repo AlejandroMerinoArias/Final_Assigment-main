@@ -37,8 +37,10 @@ def generate_launch_description():
         name="unity_ros",
         output="screen",
         remappings=[
-            ("Quadrotor/Sensors/IMU/pose", pose_topic),
-            ("Quadrotor/Sensors/IMU/twist", "/true_twist"),
+            ("Quadrotor/TrueState/pose", pose_topic),
+            ("Quadrotor/TrueState/twist", "/true_twist"),
+            ("Quadrotor/Sensors/IMU/pose", "/imu/pose"),
+            ("Quadrotor/Sensors/IMU/twist", "/imu/twist"),
             ("Quadrotor/Sensors/DepthCamera/image_raw", depth_image_topic),
             ("Quadrotor/Sensors/DepthCamera/camera_info", depth_info_topic),
             ("Quadrotor/Sensors/RGBCameraLeft/image_raw", left_image_topic),
