@@ -52,7 +52,7 @@ processing (RGB, depth, IMU, mapping).【F:ros2_ws/src/simulation/launch/simulat
 The Unity true-state parser publishes pose and twist messages stamped in the `body` frame, while TF
 broadcasting uses `world -> true_body`. Downstream perception should rely on TF for frame transforms
 and prefer `true_body` (TF) over the `body` string in message headers when building the map or fusing
-detections.【F:ros2_ws/src/simulation/src/true_state_parser.h†L49-L92
+detections.【F:ros2_ws/src/simulation/src/true_state_parser.h†L49-L92】
 
 ### State estimation input selection
 
@@ -84,3 +84,23 @@ Outputs:
 
 See `mapping_pkg/mapping_node.py` for parameters such as `pointcloud_topic`, `output_topic`,
 `downsample`, and `max_range_m`, and the launch file for OctoMap configuration.【F:ros2_ws/src/mapping_pkg/mapping_pkg/mapping_node.py†L66-L159】【F:ros2_ws/src/mapping_pkg/launch/mapping.launch.py†L1-L41】
+
+### Lantern detection package (semantic RGB + depth)
+
+The new `lantern_detector_pkg` provides a lightweight perception node that detects yellow lantern
+pixels from the semantic RGB camera, synchronizes with depth and camera info, and publishes the
+3D detections as a `geometry_msgs/PoseArray` in the RGB camera frame.
+
+Defaults and behavior:
+
+- Subscribes to `/realsense/rgb/image_rect_raw_left`, `/realsense/depth/image_rect_raw`, and
+  `/realsense/rgb/camera_info_left`.
+- Uses HSV thresholding (`hsv_lower`/`hsv_upper`) and a minimum blob area (`min_area`) to find
+  lantern centroids in the semantic RGB stream.
+- Retrieves a median depth over a configurable window (`depth_window`) and projects pixels into
+  camera coordinates using `CameraInfo.k`.
+- Publishes detections on `/lantern_detections` as `PoseArray` messages, with orientation set to
+  identity for each pose.
+
+See `lantern_detector_pkg/lantern_detector_node.py` for algorithm details and
+`lantern_detector_pkg/launch/lantern_detector.launch.py` for default parameters.【F:ros2_ws/src/lantern_detector_pkg/lantern_detector_pkg/lantern_detector_node.py†L1-L164】【F:ros2_ws/src/lantern_detector_pkg/launch/lantern_detector.launch.py†L1-L23】
