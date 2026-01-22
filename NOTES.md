@@ -104,3 +104,20 @@ Defaults and behavior:
 
 See `lantern_detector_pkg/lantern_detector_node.py` for algorithm details and
 `lantern_detector_pkg/launch/lantern_detector.launch.py` for default parameters.【F:ros2_ws/src/lantern_detector_pkg/lantern_detector_pkg/lantern_detector_node.py†L1-L164】【F:ros2_ws/src/lantern_detector_pkg/launch/lantern_detector.launch.py†L1-L23】
+
+### Perception fusion package (lantern map in world frame)
+
+The `perception_fusion_pkg` registers lantern detections into the global `world` frame and fuses
+repeated observations into a stable POI list for planning.
+
+Defaults and behavior:
+
+- Subscribes to `/lantern_detections` (`geometry_msgs/PoseArray`) from the detector.
+- Uses TF to transform camera-frame detections into `world`, keyed by the detection timestamp or
+  the latest `/current_state_est` stamp when `use_state_estimate` is enabled.
+- Fuses detections with a distance-based merge (`merge_distance`) and tracks observation counts
+  to filter noisy one-offs (`min_observations`).
+- Publishes the fused map on `/lantern_map` as a `PoseArray` in the `world` frame.
+
+See `perception_fusion_pkg/lantern_fusion_node.py` for the fusion logic and
+`perception_fusion_pkg/launch/lantern_fusion.launch.py` for parameters.【F:ros2_ws/src/perception_fusion_pkg/perception_fusion_pkg/lantern_fusion_node.py†L1-L157】【F:ros2_ws/src/perception_fusion_pkg/launch/lantern_fusion.launch.py†L1-L27】
