@@ -2,9 +2,10 @@ from dataclasses import dataclass
 from typing import List, Tuple
 
 import rclpy
-from geometry_msgs.msg import Pose, PoseArray, PoseStamped
+from geometry_msgs.msg import Pose, PoseArray
 from nav_msgs.msg import Odometry
 from rclpy.duration import Duration
+from rclpy.time import Time
 from rclpy.node import Node
 from tf2_geometry_msgs import do_transform_pose
 from tf2_ros import Buffer, TransformException, TransformListener
@@ -68,7 +69,9 @@ class LanternFusionNode(Node):
 
         lookup_stamp = msg.header.stamp
         if self.use_state_estimate and self.last_state_stamp is not None:
-            lookup_stamp = self.last_state_stamp
+            msg_time = Time.from_msg(msg.header.stamp)
+            state_time = Time.from_msg(self.last_state_stamp)
+            lookup_stamp = msg.header.stamp if msg_time <= state_time else self.last_state_stamp
         
         source_frame = self._normalize_frame_id(msg.header.frame_id)
         try:
@@ -84,18 +87,34 @@ class LanternFusionNode(Node):
                 f"'{source_frame}' to '{self.world_frame}': {exc}"
             )
             return
-
+            try:
+                transform = self.tf_buffer.lookup_transform(
+                    self.world_frame,
+                    source_frame,
+                    Time(),
+                    timeout=self.tf_timeout,
+                )
+                self.get_logger().warn(
+                    "Failed to transform detections at requested time; "
+                    f"using latest TF instead: {exc}"
+                )
+            except TransformException as latest_exc:
+                self.get_logger().warn(
+                    "Failed to transform detections from "
+                    f"'{source_frame}' to '{self.world_frame}': {latest_exc}"
+                )
+                return
+            
         for pose in msg.poses:
-            pose_stamped = PoseStamped()
-            pose_stamped.header.frame_id = source_frame
-            pose_stamped.header.stamp = lookup_stamp
-            pose_stamped.pose = pose
-
-            pose_world = do_transform_pose(pose_stamped, transform)
+            pose_world = do_transform_pose(pose, transform)
+            if hasattr(pose_world, "pose"):
+                position_ref = pose_world.pose.position
+            else:
+                position_ref = pose_world.position
             position = (
-                float(pose_world.pose.position.x),
-                float(pose_world.pose.position.y),
-                float(pose_world.pose.position.z),
+                float(position_ref.x),
+                float(position_ref.y),
+                float(position_ref.z),
             )
             self.merge_detection(position)
 
