@@ -56,6 +56,9 @@ def _extract_centroids(mask: np.ndarray, min_area: float) -> List[Tuple[int, int
         centroids.append((u, v))
     return centroids
 
+def _normalize_frame_id(frame_id: str) -> str:
+    return frame_id.lstrip("/")
+
 
 class LanternDetectorNode(Node):
     def __init__(self) -> None:
@@ -145,14 +148,14 @@ class LanternDetectorNode(Node):
 
         pose_array = PoseArray()
         pose_array.header.stamp = rgb_msg.header.stamp
-        pose_array.header.frame_id = self.output_frame or info_msg.header.frame_id
+        pose_array.header.frame_id = _normalize_frame_id(info_msg.header.frame_id)
         pose_array.poses = poses
         self.pose_pub.publish(pose_array)
 
     def _empty_pose_array(self, info_msg: CameraInfo) -> PoseArray:
         pose_array = PoseArray()
         pose_array.header.stamp = self.get_clock().now().to_msg()
-        pose_array.header.frame_id = self.output_frame or info_msg.header.frame_id
+        pose_array.header.frame_id = _normalize_frame_id(info_msg.header.frame_id)
         return pose_array
 
 

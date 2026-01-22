@@ -32,7 +32,9 @@ class LanternFusionNode(Node):
         detections_topic = self.get_parameter("detections_topic").get_parameter_value().string_value
         state_topic = self.get_parameter("state_topic").get_parameter_value().string_value
         self.use_state_estimate = bool(self.get_parameter("use_state_estimate").value)
-        self.world_frame = self.get_parameter("world_frame").get_parameter_value().string_value
+        self.world_frame = self._normalize_frame_id(
+            self.get_parameter("world_frame").get_parameter_value().string_value
+        )
         map_topic = self.get_parameter("map_topic").get_parameter_value().string_value
         self.merge_distance = float(self.get_parameter("merge_distance").value)
         self.min_observations = int(self.get_parameter("min_observations").value)
@@ -67,24 +69,25 @@ class LanternFusionNode(Node):
         lookup_stamp = msg.header.stamp
         if self.use_state_estimate and self.last_state_stamp is not None:
             lookup_stamp = self.last_state_stamp
-
+        
+        source_frame = self._normalize_frame_id(msg.header.frame_id)
         try:
             transform = self.tf_buffer.lookup_transform(
                 self.world_frame,
-                msg.header.frame_id,
+                source_frame,
                 lookup_stamp,
                 timeout=self.tf_timeout,
             )
         except TransformException as exc:
             self.get_logger().warn(
                 "Failed to transform detections from "
-                f"'{msg.header.frame_id}' to '{self.world_frame}': {exc}"
+                f"'{source_frame}' to '{self.world_frame}': {exc}"
             )
             return
 
         for pose in msg.poses:
             pose_stamped = PoseStamped()
-            pose_stamped.header.frame_id = msg.header.frame_id
+            pose_stamped.header.frame_id = source_frame
             pose_stamped.header.stamp = lookup_stamp
             pose_stamped.pose = pose
 
@@ -138,6 +141,9 @@ class LanternFusionNode(Node):
         msg.poses = poses
         self.map_pub.publish(msg)
 
+    @staticmethod
+    def _normalize_frame_id(frame_id: str) -> str:
+        return frame_id.lstrip("/")
 
 def main() -> None:
     rclpy.init()
