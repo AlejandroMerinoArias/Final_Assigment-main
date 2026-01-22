@@ -18,6 +18,11 @@ def generate_launch_description():
         default_value=trajectory_config,
         description="Path to the waypoint trajectory YAML file",
     )
+    odom_arg = DeclareLaunchArgument(
+        "odom_topic",
+        default_value="/current_state_est",
+        description="Odometry topic for the waypoint planner",
+    )
 
     planner_node = Node(
         package="basic_waypoint_pkg",
@@ -25,6 +30,9 @@ def generate_launch_description():
         name="planner",
         output="screen",
         parameters=[LaunchConfiguration("trajectory_config")],
+        remappings=[
+            ("odom", LaunchConfiguration("odom_topic")),
+        ],
     )
 
     sampler_node = Node(
@@ -39,6 +47,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         config_arg,
+        odom_arg,
         planner_node,
         sampler_node,
     ])

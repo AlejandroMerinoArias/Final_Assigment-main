@@ -23,6 +23,8 @@ def generate_launch_description():
     depth_image_topic = LaunchConfiguration("depth_image_topic")
     depth_info_topic = LaunchConfiguration("depth_info_topic")
     imu_topic = LaunchConfiguration("imu_topic")
+    command_trajectory_topic = LaunchConfiguration("command_trajectory_topic")
+    current_state_topic = LaunchConfiguration("current_state_topic")
 
     # Declare args
     declared_args = [
@@ -35,6 +37,8 @@ def generate_launch_description():
         DeclareLaunchArgument("depth_image_topic", default_value="/realsense/depth/image_rect_raw"),
         DeclareLaunchArgument("depth_info_topic", default_value="/realsense/depth/camera_info"),
         DeclareLaunchArgument("imu_topic", default_value="/interpolate_imu/imu"),
+        DeclareLaunchArgument("command_trajectory_topic", default_value="command/trajectory"),
+        DeclareLaunchArgument("current_state_topic", default_value="current_state"),
     ]
 
     # <include file="$(find simulation)/launch/unity_ros.launch"> ...
@@ -105,6 +109,10 @@ def generate_launch_description():
         executable="controller_node",
         name="controller_node",
         output="screen",
+        remappings=[
+            ("command/trajectory", command_trajectory_topic),
+            ("current_state", current_state_topic),
+        ],
     )
 
     depth_pointcloud = Node(

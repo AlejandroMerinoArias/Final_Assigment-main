@@ -14,6 +14,11 @@ def generate_launch_description():
         description="Name of the MAV"
     )
     mav_name = LaunchConfiguration("mav_name")
+    odom_arg = DeclareLaunchArgument(
+        "odom_topic",
+        default_value="/current_state_est",
+        description="Odometry topic for the waypoint planner",
+    )
 
     # Path to trajectory_config.yaml
     trajectory_config = PathJoinSubstitution([
@@ -28,7 +33,10 @@ def generate_launch_description():
         executable="basic_waypoint_node",   # ROS1: type="basic_waypoint_pkg"
         name="planner",
         output="screen",
-        parameters=[trajectory_config]
+        parameters=[trajectory_config],
+        remappings=[
+            ("odom", LaunchConfiguration("odom_topic")),
+        ],
     )
 
     # Trajectory sampler node
@@ -44,6 +52,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         mav_name_arg,
+        odom_arg,
         planner_node,
         sampler_node,
     ])

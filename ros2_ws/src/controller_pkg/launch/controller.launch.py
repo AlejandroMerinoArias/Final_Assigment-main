@@ -17,17 +17,34 @@ def generate_launch_description():
         description='Path to controller configuration YAML file'
     )
 
+    command_traj_arg = DeclareLaunchArgument(
+        "command_trajectory_topic",
+        default_value="command/trajectory",
+        description="Topic for MultiDOFJointTrajectory commands",
+    )
+    current_state_arg = DeclareLaunchArgument(
+        "current_state_topic",
+        default_value="current_state",
+        description="Topic for nav_msgs/Odometry state updates",
+    )
+
     controller_node = Node(
         package='controller_pkg',
         executable='controller_node',
         name='controller_node',
         output='screen',
         parameters=[LaunchConfiguration('config_file')],
+        remappings=[
+            ("command/trajectory", LaunchConfiguration("command_trajectory_topic")),
+            ("current_state", LaunchConfiguration("current_state_topic")),
+        ],
         # emulate "clear_params='true'" by forcing parameter override behavior
         emulate_tty=True
     )
 
     return LaunchDescription([
         config_arg,
+        command_traj_arg,
+        current_state_arg,
         controller_node
     ])
