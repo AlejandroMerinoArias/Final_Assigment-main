@@ -67,3 +67,20 @@ same node also republishes `current_state` for the controller pipeline.【F:ros2
 
 For debugging only, you may temporarily use `/true_pose` and `/true_twist` (or their derived TF)
 to isolate perception errors, but the baseline should be `/current_state_est` to ensure robustness.
+
+### Mapping package (depth-to-voxel occupancy)
+
+The new `mapping_pkg` provides a minimal depth-based mapping node that:
+
+- Uses `depth_image_proc` to generate a point cloud from the depth image and camera info.
+- Subscribes to `/realsense/depth/points` from `depth_image_proc`.
+- Uses the state estimate (`/current_state_est`) as the world-frame anchor.
+- Transforms points into the `world` frame and feeds them into **OctoMap** via `octomap_server`.
+
+Outputs:
+
+- `mapping/points_world` (`sensor_msgs/PointCloud2`): world-frame point cloud.
+- OctoMap outputs from `octomap_server` (binary/full map topics, occupancy markers).
+
+See `mapping_pkg/mapping_node.py` for parameters such as `pointcloud_topic`, `output_topic`,
+`downsample`, and `max_range_m`, and the launch file for OctoMap configuration.【F:ros2_ws/src/mapping_pkg/mapping_pkg/mapping_node.py†L66-L159】【F:ros2_ws/src/mapping_pkg/launch/mapping.launch.py†L1-L41】
