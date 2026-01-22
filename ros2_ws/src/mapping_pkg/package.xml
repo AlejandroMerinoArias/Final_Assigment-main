@@ -3,7 +3,7 @@
   <name>mapping_pkg</name>
   <version>0.0.1</version>
   <description>Depth-based mapping node that builds a simple voxel occupancy map.</description>
-  <maintainer email="alejandromerinoarias@gmail.com">Student</maintainer>
+  <maintainer email="student@example.com">Student</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_python</buildtool_depend>
