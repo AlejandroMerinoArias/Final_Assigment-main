@@ -26,6 +26,7 @@ public:
   explicit BasicPlanner(const rclcpp::Node::SharedPtr & node);
 
   void uavOdomCallback(const nav_msgs::msg::Odometry::SharedPtr odom);
+  bool hasOdom() const;
 
   void setMaxSpeed(double max_v);
 
@@ -59,6 +60,7 @@ private:
   Eigen::Affine3d current_pose_;
   Eigen::Vector3d current_velocity_;
   Eigen::Vector3d current_angular_velocity_;
+  bool odom_received_;
 
   double max_v_;      // m/s
   double max_a_;      // m/s^2

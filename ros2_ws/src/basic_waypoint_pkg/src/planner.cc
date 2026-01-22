@@ -7,6 +7,7 @@ BasicPlanner::BasicPlanner(const rclcpp::Node::SharedPtr & node)
   current_pose_(Eigen::Affine3d::Identity()),
   current_velocity_(Eigen::Vector3d::Zero()),
   current_angular_velocity_(Eigen::Vector3d::Zero()),
+  odom_received_(false),
   max_v_(0.2),
   max_a_(0.2),
   max_ang_v_(0.0),
@@ -72,6 +73,12 @@ void BasicPlanner::uavOdomCallback(const nav_msgs::msg::Odometry::SharedPtr odom
 
   // store current velocity
   tf2::fromMsg(odom->twist.twist.linear, current_velocity_);
+  odom_received_ = true;
+}
+
+bool BasicPlanner::hasOdom() const
+{
+  return odom_received_;
 }
 
 // Method to set maximum speed.

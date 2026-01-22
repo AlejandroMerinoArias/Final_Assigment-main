@@ -117,12 +117,14 @@
      // Publish the entire trajectory at once.
      mav_msgs::EigenTrajectoryPoint::Vector trajectory_points;
      mav_trajectory_generation::sampleWholeTrajectory(
-       trajectory_, dt_, &trajectory_points);
- 
-     trajectory_msgs::msg::MultiDOFJointTrajectory msg_pub;
-     msgMultiDofJointTrajectoryFromEigen(trajectory_points, &msg_pub);
-     command_pub_->publish(msg_pub);
-   } else {
+      trajectory_, dt_, &trajectory_points);
+
+    trajectory_msgs::msg::MultiDOFJointTrajectory msg_pub;
+    msgMultiDofJointTrajectoryFromEigen(trajectory_points, &msg_pub);
+    msg_pub.header.stamp = this->now();
+    msg_pub.header.frame_id = "world";
+    command_pub_->publish(msg_pub);
+  } else {
      // Start timer-based streaming.
      current_sample_time_ = 0.0;
      start_time_ = this->get_clock()->now();
@@ -156,6 +158,12 @@
        publish_timer_->cancel();
        return;
      }
+
+    mav_msgs::msgMultiDofJointTrajectoryFromEigen(trajectory_point, &msg);
+    msg.header.stamp = this->now();
+    msg.header.frame_id = "world";
+
+    if (!msg.points.empty()) {
  
      mav_msgs::msgMultiDofJointTrajectoryFromEigen(trajectory_point, &msg);
  
@@ -173,7 +181,8 @@
      publish_timer_->cancel();
      RCLCPP_INFO(get_logger(), "Finished streaming trajectory.");
    }
- }
+  }
+}
  
  int main(int argc, char ** argv)
  {
