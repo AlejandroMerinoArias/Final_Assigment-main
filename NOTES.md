@@ -53,3 +53,17 @@ The Unity true-state parser publishes pose and twist messages stamped in the `bo
 broadcasting uses `world -> true_body`. Downstream perception should rely on TF for frame transforms
 and prefer `true_body` (TF) over the `body` string in message headers when building the map or fusing
 detections.【F:ros2_ws/src/simulation/src/true_state_parser.h†L49-L92
+
+### State estimation input selection
+
+While bootstrapping the perception stack, prefer the **corrupted state estimate** topics so your
+pipeline matches the intended noise conditions:
+
+- `/current_state_est` (primary `nav_msgs/Odometry` input for mapping/VIO)
+- `/pose_est` and `/twist_est` if you need pose/twist separately
+
+These are produced by `state_estimate_corruptor_node` from `/true_pose` and `/true_twist`, and the
+same node also republishes `current_state` for the controller pipeline.【F:ros2_ws/src/simulation/src/state_estimate_corruptor_node.cpp†L32-L149】
+
+For debugging only, you may temporarily use `/true_pose` and `/true_twist` (or their derived TF)
+to isolate perception errors, but the baseline should be `/current_state_est` to ensure robustness.
