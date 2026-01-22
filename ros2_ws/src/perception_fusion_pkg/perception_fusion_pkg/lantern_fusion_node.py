@@ -86,7 +86,6 @@ class LanternFusionNode(Node):
                 "Failed to transform detections from "
                 f"'{source_frame}' to '{self.world_frame}': {exc}"
             )
-            return
             try:
                 transform = self.tf_buffer.lookup_transform(
                     self.world_frame,
