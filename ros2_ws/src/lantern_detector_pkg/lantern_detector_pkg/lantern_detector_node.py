@@ -65,6 +65,7 @@ class LanternDetectorNode(Node):
         self.declare_parameter("depth_topic", "/realsense/depth/image_rect_raw")
         self.declare_parameter("camera_info_topic", "/realsense/rgb/camera_info_left")
         self.declare_parameter("detections_topic", "/lantern_detections")
+        self.declare_parameter("output_frame", "")
         self.declare_parameter("min_area", 8.0)
         self.declare_parameter("depth_window", 2)
         self.declare_parameter("hsv_lower", [20, 120, 120])
@@ -74,6 +75,7 @@ class LanternDetectorNode(Node):
         depth_topic = self.get_parameter("depth_topic").get_parameter_value().string_value
         info_topic = self.get_parameter("camera_info_topic").get_parameter_value().string_value
         detections_topic = self.get_parameter("detections_topic").get_parameter_value().string_value
+        self.output_frame = self.get_parameter("output_frame").get_parameter_value().string_value
 
         self.min_area = float(self.get_parameter("min_area").value)
         self.depth_window = int(self.get_parameter("depth_window").value)
@@ -97,9 +99,15 @@ class LanternDetectorNode(Node):
 
         self.pose_pub = self.create_publisher(PoseArray, detections_topic, 10)
 
+        frame_note = (
+            f" using frame '{self.output_frame}'"
+            if self.output_frame
+            else " using camera info frame"
+        )
+
         self.get_logger().info(
-            "Lantern detector listening to "
-            f"rgb='{rgb_topic}', depth='{depth_topic}', info='{info_topic}'"
+            f"Lantern detector listening to rgb='{rgb_topic}', "
+            f"depth='{depth_topic}', info='{info_topic}'{frame_note}"
         )
 
     def on_sync(self, rgb_msg: Image, depth_msg: Image, info_msg: CameraInfo) -> None:
@@ -137,14 +145,14 @@ class LanternDetectorNode(Node):
 
         pose_array = PoseArray()
         pose_array.header.stamp = rgb_msg.header.stamp
-        pose_array.header.frame_id = info_msg.header.frame_id
+        pose_array.header.frame_id = self.output_frame or info_msg.header.frame_id
         pose_array.poses = poses
         self.pose_pub.publish(pose_array)
 
     def _empty_pose_array(self, info_msg: CameraInfo) -> PoseArray:
         pose_array = PoseArray()
         pose_array.header.stamp = self.get_clock().now().to_msg()
-        pose_array.header.frame_id = info_msg.header.frame_id
+        pose_array.header.frame_id = self.output_frame or info_msg.header.frame_id
         return pose_array
 
 

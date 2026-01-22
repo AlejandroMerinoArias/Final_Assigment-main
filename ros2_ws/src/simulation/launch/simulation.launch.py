@@ -158,6 +158,7 @@ def generate_launch_description():
                 "depth_topic": depth_image_topic,
                 "camera_info_topic": left_info_topic,
                 "detections_topic": "/lantern_detections",
+                "output_frame": "/Quadrotor/RGBCameraLeft",
             }
         ],
     )
