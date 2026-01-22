@@ -5,6 +5,6 @@ cd $HOME/Final_Assigment/Final_Assigment-main/ros2_ws
 
 set +u
 source /opt/ros/jazzy/setup.bash
-colcon build
+colcon build --symlink-install
 source install/setup.bash
 set -u
