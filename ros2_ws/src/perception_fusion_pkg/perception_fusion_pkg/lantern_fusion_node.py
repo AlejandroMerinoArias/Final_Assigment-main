@@ -1,8 +1,9 @@
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import rclpy
-from geometry_msgs.msg import Pose, PoseArray
+from builtin_interfaces.msg import Time as TimeMsg
+from geometry_msgs.msg import Pose, PoseArray, TransformStamped
 from nav_msgs.msg import Odometry
 from rclpy.duration import Duration
 from rclpy.time import Time
@@ -29,6 +30,8 @@ class LanternFusionNode(Node):
         self.declare_parameter("merge_distance", 0.5)
         self.declare_parameter("min_observations", 1)
         self.declare_parameter("tf_timeout_s", 0.2)
+        self.declare_parameter("future_tolerance_s", 0.1)
+        self.declare_parameter("future_warn_interval_s", 2.0)
 
         detections_topic = self.get_parameter("detections_topic").get_parameter_value().string_value
         state_topic = self.get_parameter("state_topic").get_parameter_value().string_value
@@ -40,6 +43,8 @@ class LanternFusionNode(Node):
         self.merge_distance = float(self.get_parameter("merge_distance").value)
         self.min_observations = int(self.get_parameter("min_observations").value)
         self.tf_timeout = Duration(seconds=float(self.get_parameter("tf_timeout_s").value))
+        self.future_tolerance_s = float(self.get_parameter("future_tolerance_s").value)
+        self.future_warn_interval_s = float(self.get_parameter("future_warn_interval_s").value)
 
         self.tf_buffer = Buffer(cache_time=Duration(seconds=10.0))
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -53,6 +58,7 @@ class LanternFusionNode(Node):
         self.map_pub = self.create_publisher(PoseArray, map_topic, 10)
 
         self.lanterns: List[FusedLantern] = []
+        self._last_future_warn_time: Optional[Time] = None
 
         self.get_logger().info(
             "Lantern fusion listening to "
@@ -74,35 +80,10 @@ class LanternFusionNode(Node):
             lookup_stamp = msg.header.stamp if msg_time <= state_time else self.last_state_stamp
         
         source_frame = self._normalize_frame_id(msg.header.frame_id)
-        try:
-            transform = self.tf_buffer.lookup_transform(
-                self.world_frame,
-                source_frame,
-                lookup_stamp,
-                timeout=self.tf_timeout,
-            )
-        except TransformException as exc:
-            self.get_logger().warn(
-                "Failed to transform detections from "
-                f"'{source_frame}' to '{self.world_frame}': {exc}"
-            )
-            try:
-                transform = self.tf_buffer.lookup_transform(
-                    self.world_frame,
-                    source_frame,
-                    Time(),
-                    timeout=self.tf_timeout,
-                )
-                self.get_logger().warn(
-                    "Failed to transform detections at requested time; "
-                    f"using latest TF instead: {exc}"
-                )
-            except TransformException as latest_exc:
-                self.get_logger().warn(
-                    "Failed to transform detections from "
-                    f"'{source_frame}' to '{self.world_frame}': {latest_exc}"
-                )
-                return
+        transform, transform_stamp = self._lookup_transform(source_frame, lookup_stamp)
+        if transform is None:
+            return
+
             
         for pose in msg.poses:
             pose_world = do_transform_pose(pose, transform)
@@ -117,7 +98,7 @@ class LanternFusionNode(Node):
             )
             self.merge_detection(position)
 
-        self.publish_map(lookup_stamp)
+        self.publish_map(transform_stamp)
 
     def merge_detection(self, position: Tuple[float, float, float]) -> None:
         for lantern in self.lanterns:
@@ -162,6 +143,58 @@ class LanternFusionNode(Node):
     @staticmethod
     def _normalize_frame_id(frame_id: str) -> str:
         return frame_id.lstrip("/")
+    
+    def _lookup_transform(
+        self, source_frame: str, lookup_stamp: TimeMsg
+    ) -> Tuple[Optional[TransformStamped], Optional[TimeMsg]]:
+        try:
+            latest_transform = self.tf_buffer.lookup_transform(
+                self.world_frame,
+                source_frame,
+                Time(),
+                timeout=self.tf_timeout,
+            )
+        except TransformException as exc:
+            self.get_logger().warn(
+                "Failed to transform detections from "
+                f"'{source_frame}' to '{self.world_frame}': {exc}"
+            )
+            return None, None
+
+        latest_time = Time.from_msg(latest_transform.header.stamp)
+        desired_time = Time.from_msg(lookup_stamp)
+        if desired_time > latest_time:
+            ahead_seconds = (desired_time - latest_time).nanoseconds * 1e-9
+            if ahead_seconds > self.future_tolerance_s:
+                now = self.get_clock().now()
+                if (
+                    self._last_future_warn_time is None
+                    or (now - self._last_future_warn_time).nanoseconds * 1e-9
+                    >= self.future_warn_interval_s
+                ):
+                    self.get_logger().warn(
+                        "Detection timestamp is ahead of the latest TF for "
+                        f"'{source_frame}' by {ahead_seconds:.3f}s. Using latest "
+                        f"TF at {latest_time.nanoseconds * 1e-9:.3f}s instead."
+                    )
+                    self._last_future_warn_time = now
+            return latest_transform, latest_transform.header.stamp
+
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                self.world_frame,
+                source_frame,
+                lookup_stamp,
+                timeout=self.tf_timeout,
+            )
+        except TransformException as exc:
+            self.get_logger().warn(
+                "Failed to transform detections from "
+                f"'{source_frame}' to '{self.world_frame}': {exc}"
+            )
+            return None, None
+
+        return transform, lookup_stamp
 
 def main() -> None:
     rclpy.init()
