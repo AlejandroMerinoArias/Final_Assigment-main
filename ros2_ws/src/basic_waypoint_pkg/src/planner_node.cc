@@ -19,7 +19,7 @@
    rclcpp::init(argc, argv);
  
    // Create node
-   auto node = rclcpp::Node::make_shared("simple_planner");
+   auto node = rclcpp::Node::make_shared("planner");
  
    // Instantiate basic planner
    BasicPlanner planner(node);
