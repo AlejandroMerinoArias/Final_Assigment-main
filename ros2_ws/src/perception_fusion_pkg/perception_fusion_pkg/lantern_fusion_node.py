@@ -52,10 +52,8 @@ class LanternFusionNode(Node):
         self.lanterns: List[FusedLantern] = []
 
         self.get_logger().info(
-            "Lantern fusion listening to detections='%s', state='%s', output='%s'",
-            detections_topic,
-            state_topic,
-            map_topic,
+            "Lantern fusion listening to "
+            f"detections='{detections_topic}', state='{state_topic}', output='{map_topic}'"
         )
 
     def on_state(self, msg: Odometry) -> None:
@@ -79,10 +77,8 @@ class LanternFusionNode(Node):
             )
         except TransformException as exc:
             self.get_logger().warn(
-                "Failed to transform detections from '%s' to '%s': %s",
-                msg.header.frame_id,
-                self.world_frame,
-                exc,
+                "Failed to transform detections from "
+                f"'{msg.header.frame_id}' to '{self.world_frame}': {exc}"
             )
             return
 

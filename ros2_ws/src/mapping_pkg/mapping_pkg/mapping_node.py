@@ -105,10 +105,8 @@ class MappingNode(Node):
         self.cloud_pub = self.create_publisher(PointCloud2, output_topic, 10)
 
         self.get_logger().info(
-            "Mapping node listening to pointcloud='%s', state='%s', output='%s'",
-            pointcloud_topic,
-            state_topic,
-            output_topic,
+            "Mapping node listening to "
+            f"pointcloud='{pointcloud_topic}', state='{state_topic}', output='{output_topic}'"
         )
 
     def on_state(self, msg: Odometry) -> None:

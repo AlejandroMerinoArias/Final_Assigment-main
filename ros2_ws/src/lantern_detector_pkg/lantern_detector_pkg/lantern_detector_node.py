@@ -98,10 +98,8 @@ class LanternDetectorNode(Node):
         self.pose_pub = self.create_publisher(PoseArray, detections_topic, 10)
 
         self.get_logger().info(
-            "Lantern detector listening to rgb='%s', depth='%s', info='%s'",
-            rgb_topic,
-            depth_topic,
-            info_topic,
+            "Lantern detector listening to "
+            f"rgb='{rgb_topic}', depth='{depth_topic}', info='{info_topic}'"
         )
 
     def on_sync(self, rgb_msg: Image, depth_msg: Image, info_msg: CameraInfo) -> None:
