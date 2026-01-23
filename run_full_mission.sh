@@ -9,4 +9,4 @@ source install/setup.bash
 set -u
 
 export GALLIUM_DRIVER=d3d12
-exec ros2 launch simulation full_mission.launch.py "$@"
+exec ros2 launch simulation full_mission.launch.py corrupt_state_estimate:=false "$@"

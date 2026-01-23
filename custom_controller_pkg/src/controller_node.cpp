@@ -6,7 +6,7 @@
 
 #include <mav_msgs/msg/actuators.hpp>
 #include <nav_msgs/msg/odometry.hpp>
-#include <trajectory_msgs/msg/multi_dof_joint_trajectory_point.hpp>
+#include <trajectory_msgs/msg/multi_dof_joint_trajectory.hpp>
 
 #include <Eigen/Dense>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
@@ -53,7 +53,7 @@ class ControllerNode : public rclcpp::Node {
   //
   // ~~~~ begin solution
 
-  rclcpp::Subscription<trajectory_msgs::msg::MultiDOFJointTrajectoryPoint>::SharedPtr
+  rclcpp::Subscription<trajectory_msgs::msg::MultiDOFJointTrajectory>::SharedPtr
       desired_state_sub_;
 
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr
@@ -121,7 +121,7 @@ public:
     //
     // In this section, you need to initialize your handlers from part 1.
     // Specifically:
-    //  - bind controllerNode::onDesiredState() to the topic "desired_state"
+    //  - bind controllerNode::onDesiredState() to the topic "command/trajectory"
     //  - bind controllerNode::onCurrentState() to the topic "current_state"
     //  - bind controllerNode::controlLoop() to the created timer, at frequency
     //    given by the "hz" variable
@@ -132,10 +132,10 @@ public:
     // ~~~~ begin solution
     // Subscribers
     desired_state_sub_ =
-        this->create_subscription<trajectory_msgs::msg::MultiDOFJointTrajectoryPoint>(
-            "desired_state",
+        this->create_subscription<trajectory_msgs::msg::MultiDOFJointTrajectory>(
+            "command/trajectory",
             rclcpp::QoS(10),
-            [this](trajectory_msgs::msg::MultiDOFJointTrajectoryPoint::SharedPtr msg) {
+            [this](trajectory_msgs::msg::MultiDOFJointTrajectory::SharedPtr msg) {
               this->onDesiredState(msg);
             });
 
@@ -184,7 +184,7 @@ public:
     RCLCPP_INFO(this->get_logger(), "controller_node ready (hz=%.1f)", hz);
   }
 
-  void onDesiredState(const trajectory_msgs::msg::MultiDOFJointTrajectoryPoint::SharedPtr des_state_msg){
+  void onDesiredState(const trajectory_msgs::msg::MultiDOFJointTrajectory::SharedPtr des_state_msg){
       // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
       //  PART 3 | Objective: fill in xd, vd, ad, yawd
       // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -196,17 +196,24 @@ public:
       // Hint: use "v << vx, vy, vz;" to fill in a vector with Eigen.
       //
       // ~~~~ begin solution
-      if (des_state_msg->transforms.empty() ||
-          des_state_msg->velocities.empty() ||
-          des_state_msg->accelerations.empty()) {
+      if (des_state_msg->points.empty()) {
+        RCLCPP_WARN(this->get_logger(),
+                    "DesiredState message missing trajectory points.");
+        return;
+      }
+
+      const auto &point = des_state_msg->points.front();
+      if (point.transforms.empty() ||
+          point.velocities.empty() ||
+          point.accelerations.empty()) {
         RCLCPP_WARN(this->get_logger(),
                     "DesiredState message missing transforms/velocities/accelerations.");
         return;
       }
 
-      const auto &T = des_state_msg->transforms[0];
-      const auto &V = des_state_msg->velocities[0];
-      const auto &A = des_state_msg->accelerations[0];
+      const auto &T = point.transforms[0];
+      const auto &V = point.velocities[0];
+      const auto &A = point.accelerations[0];
 
       xd << T.translation.x, T.translation.y, T.translation.z;
 
