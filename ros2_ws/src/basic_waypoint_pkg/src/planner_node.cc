@@ -19,7 +19,7 @@
    rclcpp::init(argc, argv);
  
    // Create node
-   auto node = rclcpp::Node::make_shared("planner");
+   auto node = rclcpp::Node::make_shared("simple_planner");
  
    // Instantiate basic planner
    BasicPlanner planner(node);
@@ -48,6 +48,13 @@
   Eigen::Vector3d goal_position, goal_velocity;
   goal_position << 0.0, 0.0, 0.0;
   goal_velocity << 0.0, 0.0, 0.0;
+
+  // Process some callbacks so that the odom callback can run
+   rclcpp::Rate spin_rate(50.0);
+   for (int i = 0; i < 10; ++i) {
+     rclcpp::spin_some(node);
+     spin_rate.sleep();
+   }
  
    // Plan and publish trajectory
    mav_trajectory_generation::Trajectory trajectory;

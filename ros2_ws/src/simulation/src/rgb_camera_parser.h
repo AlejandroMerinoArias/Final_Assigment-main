@@ -13,11 +13,9 @@
 
 class RGBCameraParser : public UnityStreamParser {
 public:
-  explicit RGBCameraParser(const rclcpp::Node::SharedPtr & node)
-  : node_(node ? node : rclcpp::Node::make_shared("rgb_camera_parser")) {}
-
-  RGBCameraParser()
-  : RGBCameraParser(rclcpp::Node::SharedPtr()) {}
+  RGBCameraParser() {
+    node_ = rclcpp::Node::make_shared("rgb_camera_parser");
+  }
 
   virtual bool ParseMessage(const UnityHeader& header, 
                             TCPStreamReader& stream_reader,
@@ -100,8 +98,7 @@ protected:
     clip_plane_ = stream_reader.ReadFloat();
     return image_server_->GetImage();
   }
-
-
+  
   std::unique_ptr<TCPImageServer> image_server_;
   rclcpp::Node::SharedPtr node_;
 private:

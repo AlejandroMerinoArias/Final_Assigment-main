@@ -106,7 +106,6 @@ class StateEstimateCorruptorNode : public rclcpp::Node {
 		pose_corrupted.pose.position.z += drift_.position.z + whiteNoise(pos_white_sigma_);
 
 		PublishCorruptedPose(pose_corrupted);
-		PublishCorruptedStateFromPose(pose_corrupted);
 
 		// Update latest timestamps
 		virgin_ = false;
@@ -125,9 +124,6 @@ class StateEstimateCorruptorNode : public rclcpp::Node {
 		actual_velocity_global_x_ = twist->twist.linear.x;
 		actual_velocity_global_y_ = twist->twist.linear.y;
 		actual_velocity_global_z_ = twist->twist.linear.z;
-
-		last_twist_ = *twist;
-		has_twist_ = true;
 
 		PublishCorruptedTwist(*twist);
 		PublishCorruptedState(*twist);
@@ -151,25 +147,6 @@ class StateEstimateCorruptorNode : public rclcpp::Node {
 
 		corrupted_state_pub_->publish(corrupted_state);
 		current_state_pub_->publish(corrupted_state);
-	}
-
-	void PublishCorruptedStateFromPose(const geometry_msgs::msg::PoseStamped& corrupt_pose) {
-		geometry_msgs::msg::TwistStamped twist;
-		if (has_twist_) {
-			twist = last_twist_;
-			twist.header.stamp = corrupt_pose.header.stamp;
-		} else {
-			twist.header.stamp = corrupt_pose.header.stamp;
-			twist.header.frame_id = "body";
-			twist.twist.linear.x = 0.0;
-			twist.twist.linear.y = 0.0;
-			twist.twist.linear.z = 0.0;
-			twist.twist.angular.x = 0.0;
-			twist.twist.angular.y = 0.0;
-			twist.twist.angular.z = 0.0;
-		}
-
-		PublishCorruptedState(twist);
 	}
 
 	void PublishCorruptedTwist(const geometry_msgs::msg::TwistStamped& twist) {
@@ -219,9 +196,6 @@ class StateEstimateCorruptorNode : public rclcpp::Node {
 	double actual_velocity_global_x_ = 0;
 	double actual_velocity_global_y_ = 0;
 	double actual_velocity_global_z_ = 0;
-
-	geometry_msgs::msg::TwistStamped last_twist_;
-	bool has_twist_ = false;
 
 	double drift_rw_factor_ = 0.0;
 	double pos_white_sigma_ = 0.0;

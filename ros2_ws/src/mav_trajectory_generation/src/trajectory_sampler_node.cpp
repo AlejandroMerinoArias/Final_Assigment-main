@@ -158,15 +158,9 @@
        publish_timer_->cancel();
        return;
      }
-
-    mav_msgs::msgMultiDofJointTrajectoryFromEigen(trajectory_point, &msg);
-    msg.header.stamp = this->now();
-    msg.header.frame_id = "world";
-
-    if (!msg.points.empty()) {
  
-     mav_msgs::msgMultiDofJointTrajectoryFromEigen(trajectory_point, &msg);
- 
+      mav_msgs::msgMultiDofJointTrajectoryFromEigen(trajectory_point, &msg);
+
      if (!msg.points.empty()) {
        // Fill time_from_start (builtin_interfaces/msg/Duration)
        auto & tfs = msg.points[0].time_from_start;
@@ -182,8 +176,7 @@
      RCLCPP_INFO(get_logger(), "Finished streaming trajectory.");
    }
   }
-}
- 
+
  int main(int argc, char ** argv)
  {
    rclcpp::init(argc, argv);

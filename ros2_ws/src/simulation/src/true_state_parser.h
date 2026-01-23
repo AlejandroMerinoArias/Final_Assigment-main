@@ -11,16 +11,21 @@
 
 class TrueStateParser : public UnityStreamParser {
 public:
-  explicit TrueStateParser(const rclcpp::Node::SharedPtr & node)
-  : node_(node ? node : rclcpp::Node::make_shared("true_state_parser")),
-    tf_broadcaster_(std::make_unique<tf2_ros::TransformBroadcaster>(node_)) {}
-
-  TrueStateParser()
-  : TrueStateParser(rclcpp::Node::SharedPtr()) {}
+  TrueStateParser() {
+    node_ = rclcpp::Node::make_shared("true_state_parser");
+    tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(node_);
+  }
 
   virtual bool ParseMessage(const UnityHeader& header, 
                             TCPStreamReader& stream_reader,
                             double time_offset) override {
+
+    EnsureNode();
+    if (last_header_name_ != header.name) {
+      last_header_name_ = header.name;
+      RCLCPP_INFO(node_->get_logger(),
+                  "Unity TrueState header name: '%s'", header.name.c_str());
+    }
     float px, py, pz;
     float qw, qx, qy, qz;
     float vx, vy, vz;
@@ -46,7 +51,7 @@ public:
     if(pose_publishers_.find(header.name) == pose_publishers_.end()) {
       pose_publishers_.insert(std::make_pair(header.name, node_->create_publisher<geometry_msgs::msg::PoseStamped>(header.name + "/pose", 10)));
       twist_publishers_.insert(std::make_pair(header.name, node_->create_publisher<geometry_msgs::msg::TwistStamped>(header.name + "/twist", 10)));
-    }    
+    }   
 
     geometry_msgs::msg::PoseStamped pose_msg;
     pose_msg.header.frame_id = "body"; //"odom_nav";
@@ -95,6 +100,30 @@ public:
   }
 
 private:
+    void EnsureNode() {
+    if (!node_) {
+      node_ = rclcpp::Node::make_shared("true_state_parser");
+    }
+    if (!tf_broadcaster_) {
+      tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(node_);
+    }
+  }
+
+  static std::string GetBaseName(const std::string & name) {
+    const std::string pose_suffix = "/pose";
+    const std::string twist_suffix = "/twist";
+    if (name.size() >= pose_suffix.size() &&
+        name.compare(name.size() - pose_suffix.size(), pose_suffix.size(), pose_suffix) == 0) {
+      return name.substr(0, name.size() - pose_suffix.size());
+    }
+    if (name.size() >= twist_suffix.size() &&
+        name.compare(name.size() - twist_suffix.size(), twist_suffix.size(), twist_suffix) == 0) {
+      return name.substr(0, name.size() - twist_suffix.size());
+    }
+    return name;
+  }
+  
+  std::string last_header_name_;
   std::unordered_map<std::string, rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr> pose_publishers_;
   std::unordered_map<std::string, rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr> twist_publishers_;
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
