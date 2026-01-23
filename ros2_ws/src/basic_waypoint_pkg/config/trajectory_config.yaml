@@ -1,7 +1,7 @@
 planner:
   ros__parameters:
-    max_v: 15.0
-    max_a: 20.0
+    max_v: 5.0
+    max_a: 2.0
 
     waypoint_names: ["p1","p2","p3","p4","p5", "t1","t1_2","t2","t3","t4",  "p0","p1","p1_2","p2","p3","p4","p5", "t1","t1_2","t2_s","t3","t4"]
 
