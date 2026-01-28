@@ -46,7 +46,7 @@
 
   // Define goal point
   Eigen::Vector3d goal_position, goal_velocity;
-  goal_position << -49.20, 23.5, 13.0; // First Lantern
+  goal_position << -80.0, 0.0, 7.0; // First Lantern
   // goal_position << -320.0, 10.0, 18.0; // Cave entrance
   goal_velocity << 0.0, 0.0, 0.0;
 

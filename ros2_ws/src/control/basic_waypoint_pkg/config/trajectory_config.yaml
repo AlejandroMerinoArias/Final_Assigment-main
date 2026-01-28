@@ -3,11 +3,19 @@ planner:
     max_v: 50.0
     max_a: 50.0
 
-    waypoint_names: ["p0"]
+    waypoint_names: ["p0", "p1", "p2", "p1", "p0"] # To the first lantern
 
     waypoints: # To the first lantern
       p0:
-        pos: [-45.0, 20.0, 13.0]
+        pos: [-80.0, 10.0, 7.0]
+      p1:
+        pos: [-80.0, 0.0, 7.0]
+      p2:
+        pos: [-80.0, -10.0, 7.0]
+  
+  # ros__parameters:
+  #   max_v: 50.0
+  #   max_a: 50.0
 
     # waypoint_names: ["p1", "p2", "p3", "p4", "p5"] # To the cave entrance
 

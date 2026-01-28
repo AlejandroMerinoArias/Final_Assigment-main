@@ -1,5 +1,6 @@
 import math
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 import cv2
@@ -29,12 +30,12 @@ class LanternDetectorNode(Node):
         self.declare_parameter("world_frame", "world")
         self.declare_parameter("body_frame", "body")
         self.declare_parameter("camera_offset", [0.1, 0.0, 0.0])
-        self.declare_parameter("min_area", 100.0)
+        self.declare_parameter("min_area", 0.0)
         self.declare_parameter("depth_window", 5)
-        self.declare_parameter("hsv_lower", [20, 100, 100])
-        self.declare_parameter("hsv_upper", [40, 255, 255])
+        self.declare_parameter("hsv_lower", [20, 90, 90])
+        self.declare_parameter("hsv_upper", [70, 255, 255])
         self.declare_parameter("gating_distance", 2.0)
-        self.declare_parameter("min_observations", 10)
+        self.declare_parameter("min_observations", 0)
 
         self.bridge = CvBridge()
         self.camera_info: Optional[CameraInfo] = None
@@ -198,10 +199,59 @@ class LanternDetectorNode(Node):
             pose.pose.orientation.w = 1.0
             self.detections_pub.publish(pose)
 
-
 def main() -> None:
     rclpy.init()
     node = LanternDetectorNode()
+    try:
+        rclpy.spin(node)
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+class LanternDetectionLoggerNode(Node):
+    def __init__(self) -> None:
+        super().__init__("lantern_detection_logger")
+
+        self.declare_parameter("detections_topic", "/detected_lanterns")
+        self.declare_parameter("output_file", "lantern_detections.txt")
+
+        self.detections: List[PoseStamped] = []
+        self.create_subscription(
+            PoseStamped,
+            self.get_parameter("detections_topic").value,
+            self.on_detection,
+            10,
+        )
+
+        self.get_logger().info("Lantern detection logger initialized")
+
+    def on_detection(self, msg: PoseStamped) -> None:
+        self.detections.append(msg)
+
+    def destroy_node(self) -> bool:
+        self.write_detections_to_file()
+        return super().destroy_node()
+
+    def write_detections_to_file(self) -> None:
+        output_file = Path(self.get_parameter("output_file").value)
+        lines = ["frame_id,x,y,z"]
+        for detection in self.detections:
+            position = detection.pose.position
+            lines.append(
+                f"{detection.header.frame_id},{position.x:.3f},{position.y:.3f},{position.z:.3f}"
+            )
+        try:
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            output_file.write_text("\n".join(lines) + "\n")
+            self.get_logger().info(f"Wrote lantern detections to {output_file}")
+        except Exception as exc:
+            self.get_logger().warn(f"Failed to write lantern detections: {exc}")
+
+
+def logger_main() -> None:
+    rclpy.init()
+    node = LanternDetectionLoggerNode()
     try:
         rclpy.spin(node)
     finally:
