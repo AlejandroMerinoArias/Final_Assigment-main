@@ -2,7 +2,7 @@
 <package format="3">
   <name>camera_recorder_pkg</name>
   <version>0.0.1</version>
-  <description>Records RGB, depth, and fisheye camera streams to video files.</description>
+  <description>Records RGB, depth, and semantic camera streams to video files.</description>
   <maintainer email="student@example.com">Student</maintainer>
   <license>Apache-2.0</license>
 

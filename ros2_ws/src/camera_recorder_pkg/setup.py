@@ -15,7 +15,7 @@ setup(
     zip_safe=True,
     maintainer="Student",
     maintainer_email="student@example.com",
-    description="Records RGB, depth, and fisheye camera streams to video files.",
+    description="Records RGB, depth, and semantic camera streams to video files.",
     license="Apache-2.0",
     tests_require=["pytest"],
     entry_points={

@@ -15,7 +15,6 @@ def generate_launch_description():
                         "rgb_left_topic": "/realsense/rgb/image_rect_raw_left",
                         "rgb_right_topic": "/realsense/rgb/image_rect_raw_right",
                         "depth_topic": "/realsense/depth/image_rect_raw",
-                        "fisheye_topic": "/Quadrotor/Sensors/FisheyeCamera/image_raw",
                         "semantic_topic": "/realsense/semantic/image_rect_raw",
                         "output_dir": "camera_videos",
                         "fps": 15.0,

@@ -23,6 +23,8 @@ def generate_launch_description():
     left_info_topic = LaunchConfiguration("left_info_topic")
     depth_image_topic = LaunchConfiguration("depth_image_topic")
     depth_info_topic = LaunchConfiguration("depth_info_topic")
+    semantic_image_topic = LaunchConfiguration("semantic_image_topic")
+    semantic_info_topic = LaunchConfiguration("semantic_info_topic")
 
     # Declare args
     declared_args = [
@@ -34,6 +36,8 @@ def generate_launch_description():
         DeclareLaunchArgument("left_info_topic", default_value="/realsense/rgb/left_image_info"),
         DeclareLaunchArgument("depth_image_topic", default_value="/realsense/depth/image"),
         DeclareLaunchArgument("depth_info_topic", default_value="/realsense/depth/camera_info"),
+        DeclareLaunchArgument("semantic_image_topic", default_value="/realsense/semantic/image_rect_raw"),
+        DeclareLaunchArgument("semantic_info_topic", default_value="/realsense/semantic/camera_info"),
     ]
 
     # <include file="$(find simulation)/launch/unity_ros.launch"> ...
@@ -50,6 +54,8 @@ def generate_launch_description():
             "left_info_topic": left_info_topic,
             "depth_image_topic": depth_image_topic,
             "depth_info_topic": depth_info_topic,
+            "semantic_image_topic": semantic_image_topic,
+            "semantic_info_topic": semantic_info_topic,
         }.items(),
     )
 

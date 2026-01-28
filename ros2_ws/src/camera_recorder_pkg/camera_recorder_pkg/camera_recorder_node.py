@@ -24,9 +24,8 @@ class CameraRecorderNode(Node):
         self.declare_parameter("rgb_left_topic", "/realsense/rgb/image_rect_raw_left")
         self.declare_parameter("rgb_right_topic", "/realsense/rgb/image_rect_raw_right")
         self.declare_parameter("depth_topic", "/realsense/depth/image_rect_raw")
-        self.declare_parameter("fisheye_topic", "/Quadrotor/Sensors/FisheyeCamera/image_raw")
         self.declare_parameter("semantic_topic", "/realsense/semantic/image_rect_raw")
-        self.declare_parameter("output_dir", "/home/aleja/Final_Assigment/Final_Assigment-main/camera_videos")
+        self.declare_parameter("output_dir", "camera_videos")
         self.declare_parameter("fps", 15.0)
         self.declare_parameter("depth_max_m", 8.0)
         self.declare_parameter("depth_colormap", True)
@@ -43,7 +42,6 @@ class CameraRecorderNode(Node):
             "rgb_left": VideoStream("rgb_left"),
             "rgb_right": VideoStream("rgb_right"),
             "depth": VideoStream("depth"),
-            "fisheye": VideoStream("fisheye"),
             "semantic": VideoStream("semantic"),
         }
 
@@ -57,12 +55,6 @@ class CameraRecorderNode(Node):
             Image,
             self.get_parameter("rgb_right_topic").get_parameter_value().string_value,
             lambda msg: self.on_rgb(msg, "rgb_right"),
-            10,
-        )
-        self.create_subscription(
-            Image,
-            self.get_parameter("fisheye_topic").get_parameter_value().string_value,
-            lambda msg: self.on_rgb(msg, "fisheye"),
             10,
         )
         self.create_subscription(
