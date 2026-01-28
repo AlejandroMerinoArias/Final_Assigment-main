@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, ExecuteProcess
 from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from launch.substitutions import PathJoinSubstitution
+from ament_index_python.packages import get_package_share_directory
+import os
 
 
 def generate_launch_description():
-
     # Launch configs (ROS1 <arg> equivalents)
     load_params = LaunchConfiguration("load_params")
     corrupt_state_estimate = LaunchConfiguration("corrupt_state_estimate")
@@ -22,23 +23,17 @@ def generate_launch_description():
     left_info_topic = LaunchConfiguration("left_info_topic")
     depth_image_topic = LaunchConfiguration("depth_image_topic")
     depth_info_topic = LaunchConfiguration("depth_info_topic")
-    imu_topic = LaunchConfiguration("imu_topic")
-    command_trajectory_topic = LaunchConfiguration("command_trajectory_topic")
-    current_state_topic = LaunchConfiguration("current_state_topic")
 
     # Declare args
     declared_args = [
         DeclareLaunchArgument("load_params", default_value="true"),
         DeclareLaunchArgument("corrupt_state_estimate", default_value="true"),
-        DeclareLaunchArgument("right_image_topic", default_value="/realsense/rgb/image_rect_raw_right"),
-        DeclareLaunchArgument("right_info_topic", default_value="/realsense/rgb/camera_info_right"),
-        DeclareLaunchArgument("left_image_topic", default_value="/realsense/rgb/image_rect_raw_left"),
-        DeclareLaunchArgument("left_info_topic", default_value="/realsense/rgb/camera_info_left"),
-        DeclareLaunchArgument("depth_image_topic", default_value="/realsense/depth/image_rect_raw"),
+        DeclareLaunchArgument("right_image_topic", default_value="/realsense/rgb/right_image_raw"),
+        DeclareLaunchArgument("right_info_topic", default_value="/realsense/rgb/right_image_info"),
+        DeclareLaunchArgument("left_image_topic", default_value="/realsense/rgb/left_image_raw"),
+        DeclareLaunchArgument("left_info_topic", default_value="/realsense/rgb/left_image_info"),
+        DeclareLaunchArgument("depth_image_topic", default_value="/realsense/depth/image"),
         DeclareLaunchArgument("depth_info_topic", default_value="/realsense/depth/camera_info"),
-        DeclareLaunchArgument("imu_topic", default_value="/interpolate_imu/imu"),
-        DeclareLaunchArgument("command_trajectory_topic", default_value="command/trajectory"),
-        DeclareLaunchArgument("current_state_topic", default_value="current_state"),
     ]
 
     # <include file="$(find simulation)/launch/unity_ros.launch"> ...
@@ -55,15 +50,17 @@ def generate_launch_description():
             "left_info_topic": left_info_topic,
             "depth_image_topic": depth_image_topic,
             "depth_info_topic": depth_info_topic,
-            "imu_topic": imu_topic,
         }.items(),
     )
 
-    # Nodes
-    simulation_node = Node(
-        package="simulation",
-        executable="Simulation.x86_64",
-        name="Simulation",
+    # Unity Simulation executable - needs to run from its directory
+    pkg_share = get_package_share_directory('simulation')
+    unity_executable = os.path.abspath(os.path.join(pkg_share, '..', '..', 'lib', 'simulation', 'Simulation.x86_64'))
+    unity_dir = os.path.abspath(os.path.join(pkg_share, '..', '..', 'lib', 'simulation'))
+    
+    simulation_node = ExecuteProcess(
+        cmd=[unity_executable],
+        cwd=unity_dir,
         output="screen",
     )
 
@@ -104,90 +101,18 @@ def generate_launch_description():
         output="screen",
     )
 
+    current_state_relay = Node(
+        package="simulation",
+        executable="current_state_relay_node",
+        name="current_state_relay",
+        output="screen",
+    )
+
     controller_node = Node(
         package="controller_pkg",
         executable="controller_node",
         name="controller_node",
         output="screen",
-        remappings=[
-            ("command/trajectory", command_trajectory_topic),
-            ("current_state", current_state_topic),
-        ],
-    )
-
-    depth_pointcloud = Node(
-        package="depth_image_proc",
-        executable="point_cloud_xyz_node",
-        name="depth_pointcloud",
-        output="screen",
-        remappings=[
-            ("image_rect", depth_image_topic),
-            ("camera_info", depth_info_topic),
-            ("points", "/realsense/depth/points"),
-        ],
-    )
-
-    mapping_node = Node(
-        package="mapping_pkg",
-        executable="mapping_node",
-        name="mapping_node",
-        output="screen",
-        parameters=[
-            {"pointcloud_topic": "/realsense/depth/points"},
-            {"state_topic": "/current_state_est"},
-            {"downsample": 4},
-            {"max_range_m": 8.0},
-            {"output_topic": "mapping/points_world"},
-        ],
-    )
-
-    octomap_server = Node(
-        package="octomap_server",
-        executable="octomap_server_node",
-        name="octomap_server",
-        output="screen",
-        parameters=[
-            {"resolution": 0.25},
-            {"frame_id": "world"},
-        ],
-        remappings=[
-            ("cloud_in", "mapping/points_world"),
-        ],
-    )
-
-    lantern_detector = Node(
-        package="lantern_detector_pkg",
-        executable="lantern_detector",
-        name="lantern_detector",
-        output="screen",
-        parameters=[
-            {
-                "rgb_topic": left_image_topic,
-                "depth_topic": depth_image_topic,
-                "camera_info_topic": left_info_topic,
-                "detections_topic": "/lantern_detections",
-                "output_frame": "/Quadrotor/RGBCameraLeft",
-            }
-        ],
-    )
-
-    lantern_fusion = Node(
-        package="perception_fusion_pkg",
-        executable="lantern_fusion_node",
-        name="lantern_fusion_node",
-        output="screen",
-        parameters=[
-            {
-                "detections_topic": "/lantern_detections",
-                "state_topic": "/current_state_est",
-                "use_state_estimate": True,
-                "world_frame": "world",
-                "map_topic": "/lantern_map",
-                "merge_distance": 0.5,
-                "min_observations": 1,
-                "tf_timeout_s": 0.2,
-            }
-        ],
     )
 
     # Static TF publishers (ROS2 CLI style args; verify for your ROS2 distro)
@@ -196,90 +121,42 @@ def generate_launch_description():
             package="tf2_ros",
             executable="static_transform_publisher",
             name="sim_true_body",
-           arguments=["0", "0", "0", "0", "0", "0", "Quadrotor/TrueState", "true_body"],
-            output="screen",
-        ),
-        Node(
-            package="tf2_ros",
-            executable="static_transform_publisher",
-            name="sim_rgb_camera_left_sensor_alias",
-            arguments=[
-                "0",
-                "0",
-                "0",
-                "0",
-                "0",
-                "0",
-                "Quadrotor/RGBCameraLeft",
-                "Quadrotor/Sensors/RGBCameraLeft",
-            ],
+            arguments=["0", "0", "0", "0", "0", "0", "/Quadrotor/TrueState", "/true_body"],
             output="screen",
         ),
         Node(
             package="tf2_ros",
             executable="static_transform_publisher",
             name="sim_rgb_camera",
-            arguments=["0", "-0.05", "0", "0", "0", "0", "camera", "Quadrotor/RGBCameraLeft"],
+            arguments=["0", "-0.05", "0", "0", "0", "0", "/camera", "/Quadrotor/RGBCameraLeft"],
             output="screen",
         ),
         Node(
             package="tf2_ros",
             executable="static_transform_publisher",
             name="sim_depth_camera",
-            arguments=["0", "0", "0", "0", "0", "0", "depth_camera", "Quadrotor/DepthCamera"],
-            output="screen",
-        ),
-        Node(
-            package="tf2_ros",
-            executable="static_transform_publisher",
-            name="sim_depth_camera_sensor_alias",
-            arguments=[
-                "0",
-                "0",
-                "0",
-                "0",
-                "0",
-                "0",
-                "Quadrotor/DepthCamera",
-                "Quadrotor/Sensors/DepthCamera",
-            ],
+            arguments=["0", "0", "0", "0", "0", "0", "/depth_camera", "/Quadrotor/DepthCamera"],
             output="screen",
         ),
         Node(
             package="tf2_ros",
             executable="static_transform_publisher",
             name="sim_right_camera",
-            arguments=["0", "0.05", "0", "0", "0", "0", "camera", "Quadrotor/RGBCameraRight"],
-            output="screen",
-        ),
-        Node(
-            package="tf2_ros",
-            executable="static_transform_publisher",
-            name="sim_rgb_camera_right_sensor_alias",
-            arguments=[
-                "0",
-                "0",
-                "0",
-                "0",
-                "0",
-                "0",
-                "Quadrotor/RGBCameraRight",
-                "Quadrotor/Sensors/RGBCameraRight",
-            ],
+            arguments=["0", "0.05", "0", "0", "0", "0", "/camera", "/Quadrotor/RGBCameraRight"],
             output="screen",
         ),
         Node(
             package="tf2_ros",
             executable="static_transform_publisher",
             name="camera_to_body",
-            arguments=["0", "0", "0", "0", "0", "0", "true_body", "/camera"],
+            arguments=["0", "0", "0", "0", "0", "0", "/true_body", "/camera"],
             output="screen",
         ),
         Node(
             package="tf2_ros",
             executable="static_transform_publisher",
             name="depth_camera_to_body",
-            arguments=["0", "0", "0", "0", "0", "0", "true_body", "/depth_camera"],
+            arguments=["0", "0", "0", "0", "0", "0", "/true_body", "/depth_camera"],
             output="screen",
         ),
     ]
@@ -292,12 +169,8 @@ def generate_launch_description():
             state_estimate_corruptor,
             state_estimate_corruptor_disabled,
             w_to_unity,
+            current_state_relay,
             controller_node,
-            depth_pointcloud,
-            mapping_node,
-            octomap_server,
-            lantern_detector,
-            lantern_fusion,
             *static_tf_nodes,
         ]
     )

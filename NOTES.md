@@ -18,6 +18,8 @@ The `unity_ros` node remaps Unity topics into ROS 2 sensor topics:
 | `Quadrotor/Sensors/RGBCameraRight/camera_info` | `/realsense/rgb/camera_info_right` | `sensor_msgs/CameraInfo` |
 | `Quadrotor/Sensors/DepthCamera/image_raw` | `/realsense/depth/image_rect_raw` | `sensor_msgs/Image` (`16UC1`) |
 | `Quadrotor/Sensors/DepthCamera/camera_info` | `/realsense/depth/camera_info` | `sensor_msgs/CameraInfo` |
+| `Quadrotor/Sensors/FisheyeCamera/image_raw` | `/realsense/fisheye/image_rect_raw` | `sensor_msgs/Image` |
+| `Quadrotor/Sensors/FisheyeCamera/camera_info` | `/realsense/fisheye/camera_info` | `sensor_msgs/CameraInfo` |
 | `Quadrotor/IMU` | `/interpolate_imu/imu` | `sensor_msgs/Imu` |
 | `Quadrotor/TrueState/pose` | `/true_pose` | `geometry_msgs/PoseStamped` |
 | `Quadrotor/TrueState/twist` | `/true_twist` | `geometry_msgs/TwistStamped` |

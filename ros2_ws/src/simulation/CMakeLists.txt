@@ -92,6 +92,13 @@ ament_target_dependencies(state_estimate_corruptor_node
 )
 target_link_libraries(state_estimate_corruptor_node)
 
+add_executable(current_state_relay_node src/current_state_relay_node.cpp)
+ament_target_dependencies(current_state_relay_node
+  rclcpp
+  nav_msgs
+)
+target_link_libraries(current_state_relay_node)
+
 add_executable(unity_ros src/unity_ros.cpp)
 ament_target_dependencies(unity_ros
   rclcpp
@@ -111,41 +118,25 @@ add_dependencies(unity_ros libsocket)
 install(TARGETS
   w_to_unity
   state_estimate_corruptor_node
+  current_state_relay_node
   unity_ros
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 
 # --- Install Unity Simulation binaries ---
 install(PROGRAMS
-  Simulator/Simulation.x86_64
-  Simulator/UnityPlayer.so
-  DESTINATION lib/${PROJECT_NAME}
-)
+  ../unity_sim/Simulation.x86_64
+  ../unity_sim/UnityPlayer.so
+  DESTINATION lib/${PROJECT_NAME})
 
-# --- Install Unity Simulation data folder ---
+# Install Unity Simulation_Data directory
 install(DIRECTORY
-  ${CMAKE_CURRENT_SOURCE_DIR}/Simulator/Simulation_Data
-  DESTINATION lib/${PROJECT_NAME}
-  USE_SOURCE_PERMISSIONS
-)
+  ../unity_sim/Simulation_Data
+  DESTINATION lib/${PROJECT_NAME})
 
 # Install all launch files
 install(DIRECTORY launch
   DESTINATION share/${PROJECT_NAME}
-)
-
-# --- Install Unity Simulation binaries ---
-install(PROGRAMS
-  Simulator/Simulation.x86_64
-  Simulator/UnityPlayer.so
-  DESTINATION share/${PROJECT_NAME}
-)
-
-# --- Install Unity Simulation data folder ---
-install(DIRECTORY
-  ${CMAKE_CURRENT_SOURCE_DIR}/Simulator/Simulation_Data
-  DESTINATION share/${PROJECT_NAME}
-  USE_SOURCE_PERMISSIONS
 )
 
 # --- Export and package ------------------------------------------------------

@@ -98,7 +98,8 @@ protected:
     clip_plane_ = stream_reader.ReadFloat();
     return image_server_->GetImage();
   }
-  
+
+
   std::unique_ptr<TCPImageServer> image_server_;
   rclcpp::Node::SharedPtr node_;
 private:

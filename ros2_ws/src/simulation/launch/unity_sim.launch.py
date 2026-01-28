@@ -6,8 +6,8 @@ import os
 
 def generate_launch_description():
     # Path to the Unity binary installed by ExternalProject into share/unity_bridge/unitysim
-    pkg_share = get_package_share_directory('simulation')
-    unity_bin = os.path.join(pkg_share, 'Simulation.x86_64')
+    pkg_share = get_package_share_directory('unity_bridge')
+    unity_bin = os.path.join(pkg_share, 'unitysim', 'VNAV.x86_64')
 
     vnav = ExecuteProcess(
         cmd=[unity_bin],
@@ -15,7 +15,7 @@ def generate_launch_description():
     )
 
     w_to_unity = Node(
-        package='simulation',
+        package='unity_bridge',
         executable='w_to_unity',
         name='w_to_unity',
         output='screen',
@@ -23,18 +23,18 @@ def generate_launch_description():
         # parameters=[{'ip_address': '127.0.0.1', 'port': '12346'}]
     )
 
-    unity_ros = Node(
-        package='simulation',
-        executable='unity_ros',
-        name='unity_ros',
+    unity_state = Node(
+        package='unity_bridge',
+        executable='unity_state',
+        name='unity_state',
         output='screen'
     )
 
-    state_estimate_corruptor_node = Node(
+    current_state_relay = Node(
         package='simulation',
-        executable='state_estimate_corruptor_node',
-        name='state_estimate_corruptor_node',
+        executable='current_state_relay_node',
+        name='current_state_relay',
         output='screen'
     )
 
-    return LaunchDescription([vnav, w_to_unity, unity_ros, state_estimate_corruptor_node])
+    return LaunchDescription([vnav, w_to_unity, unity_state, current_state_relay])

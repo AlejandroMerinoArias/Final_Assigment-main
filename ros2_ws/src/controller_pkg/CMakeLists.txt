@@ -60,7 +60,16 @@ install(
   DESTINATION lib
 )
 
+install(
+  DIRECTORY include/
+  DESTINATION include/${PROJECT_NAME}
+)
+
 install(DIRECTORY launch
+  DESTINATION share/${PROJECT_NAME}
+)
+
+install(DIRECTORY config
   DESTINATION share/${PROJECT_NAME}
 )
 
