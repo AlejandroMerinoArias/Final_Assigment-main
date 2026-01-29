@@ -19,6 +19,7 @@ from message_filters import ApproximateTimeSynchronizer, Subscriber
 class Track:
     position: np.ndarray
     observations: int
+    published: bool = False
 
 
 class LanternDetectorNode(Node):
@@ -87,7 +88,10 @@ class LanternDetectorNode(Node):
             if camera_point is None:
                 continue
 
-            world_point = self.camera_to_world(camera_point, semantic_msg.header.stamp)
+            world_point = self.camera_to_world(
+                camera_point,
+                semantic_msg.header.stamp,
+            )
             if world_point is None:
                 continue
 
@@ -141,38 +145,21 @@ class LanternDetectorNode(Node):
         return np.array([x, y, z], dtype=np.float64)
 
     def camera_to_world(self, camera_point: np.ndarray, stamp) -> Optional[np.ndarray]:
+        pose_frame = self.get_parameter("body_frame").value
         offset = np.array(self.get_parameter("camera_offset").value, dtype=np.float64)
-        body_point = camera_point + offset
+        body_point = self.camera_to_body(camera_point) + offset
         pose = PoseStamped()
         pose.header.stamp = stamp
-        pose.header.frame_id = self.get_parameter("body_frame").value
+        timeout_s = float(self.get_parameter("tf_timeout_s").value)
+        use_latest = bool(self.get_parameter("use_latest_tf_on_extrapolation").value)
+        pose.header.frame_id = pose_frame
         pose.pose.position.x = float(body_point[0])
         pose.pose.position.y = float(body_point[1])
         pose.pose.position.z = float(body_point[2])
         pose.pose.orientation.w = 1.0
-        timeout_s = float(self.get_parameter("tf_timeout_s").value)
-        use_latest = bool(self.get_parameter("use_latest_tf_on_extrapolation").value)
-        try:
-            world_pose = self.tf_buffer.transform(
-                pose,
-                self.get_parameter("world_frame").value,
-                timeout=rclpy.duration.Duration(seconds=timeout_s),
-            )
-        except Exception as exc:
-            if use_latest and "extrapolation into the future" in str(exc).lower():
-                try:
-                    pose.header.stamp = rclpy.time.Time()
-                    world_pose = self.tf_buffer.transform(
-                        pose,
-                        self.get_parameter("world_frame").value,
-                        timeout=rclpy.duration.Duration(seconds=timeout_s),
-                    )
-                except Exception as retry_exc:
-                    self.get_logger().warn(f"TF transform failed: {retry_exc}")
-                    return None
-            else:
-                self.get_logger().warn(f"TF transform failed: {exc}")
-                return None
+        world_pose = self.transform_pose(pose, timeout_s, use_latest)
+        if world_pose is None:
+            return None
 
         return np.array(
             [
@@ -183,6 +170,40 @@ class LanternDetectorNode(Node):
             dtype=np.float64,
         )
 
+    @staticmethod
+    def camera_to_body(camera_point: np.ndarray) -> np.ndarray:
+        rotation = np.array(
+            [
+                [0.0, 0.0, 1.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            dtype=np.float64,
+        )
+        return rotation @ camera_point
+
+    def transform_pose(self, pose: PoseStamped, timeout_s: float, use_latest: bool) -> Optional[PoseStamped]:
+        try:
+             return self.tf_buffer.transform(
+                pose,
+                self.get_parameter("world_frame").value,
+                timeout=rclpy.duration.Duration(seconds=timeout_s),
+            )
+        except Exception as exc:
+            if use_latest and "extrapolation into the future" in str(exc).lower():
+                try:
+                    pose.header.stamp = rclpy.time.Time()
+                    return self.tf_buffer.transform(
+                        pose,
+                        self.get_parameter("world_frame").value,
+                        timeout=rclpy.duration.Duration(seconds=timeout_s),
+                    )
+                except Exception as retry_exc:
+                    self.get_logger().warn(f"TF transform failed: {retry_exc}")
+                    return None
+            self.get_logger().warn(f"TF transform failed: {exc}")
+            return None
+        
     def update_tracks(self, world_point: np.ndarray) -> None:
         gating_distance = float(self.get_parameter("gating_distance").value)
         best_track = None
@@ -207,6 +228,8 @@ class LanternDetectorNode(Node):
         for track in self.tracks:
             if track.observations < min_observations:
                 continue
+            if track.published:
+                continue
             pose = PoseStamped()
             pose.header.stamp = stamp
             pose.header.frame_id = world_frame
@@ -215,6 +238,7 @@ class LanternDetectorNode(Node):
             pose.pose.position.z = float(track.position[2])
             pose.pose.orientation.w = 1.0
             self.detections_pub.publish(pose)
+            track.published = True
 
 def main() -> None:
     rclpy.init()
