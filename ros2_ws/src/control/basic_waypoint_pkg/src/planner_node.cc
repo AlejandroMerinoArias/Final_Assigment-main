@@ -46,9 +46,9 @@
 
   // Define goal point
   Eigen::Vector3d goal_position, goal_velocity;
-  // goal_position << -80.0, 0.0, 7.0; // Inspect first Lantern
-  goal_position << -47.795, -1.605, 7.803; // Position of first lantern
-  // goal_position << -320.0, 10.0, 18.0; // Cave entrance
+  // goal_position << -80.0, -10.0, 7.0; // Inspect first Lantern
+  // goal_position << -58.833, 1.063, 6.316; // Position of first lantern
+  goal_position << -320.0, 10.0, 18.0; // Cave entrance
   goal_velocity << 0.0, 0.0, 0.0;
 
   // Process some callbacks so that the odom callback can run

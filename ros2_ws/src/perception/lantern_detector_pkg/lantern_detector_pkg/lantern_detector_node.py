@@ -34,9 +34,9 @@ class LanternDetectorNode(Node):
         self.declare_parameter("camera_offset", [0.1, 0.0, 0.0])
         self.declare_parameter("min_area", 10.0)
         self.declare_parameter("depth_window", 5)
-        self.declare_parameter("hsv_lower", [20, 90, 90])
+        self.declare_parameter("hsv_lower", [20, 70, 70])
         self.declare_parameter("hsv_upper", [70, 255, 255])
-        self.declare_parameter("gating_distance", 2.0)
+        self.declare_parameter("gating_distance", 5.0)
         self.declare_parameter("min_observations", 5)
         self.declare_parameter("tf_timeout_s", 0.2)
         self.declare_parameter("use_latest_tf_on_extrapolation", True)
@@ -175,27 +175,32 @@ class LanternDetectorNode(Node):
         rotation = np.array(
             [
                 [0.0, 0.0, 1.0],
-                [1.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0],
+                [-1.0, 0.0, 0.0],
+                [0.0, -1.0, 0.0],
             ],
             dtype=np.float64,
         )
         return rotation @ camera_point
 
     def transform_pose(self, pose: PoseStamped, timeout_s: float, use_latest: bool) -> Optional[PoseStamped]:
+        target_frame = self.get_parameter("world_frame").value
+        source_frame = pose.header.frame_id
         try:
-             return self.tf_buffer.transform(
+            return self.tf_buffer.transform(
                 pose,
-                self.get_parameter("world_frame").value,
+                target_frame,
                 timeout=rclpy.duration.Duration(seconds=timeout_s),
             )
         except Exception as exc:
             if use_latest and "extrapolation into the future" in str(exc).lower():
                 try:
-                    pose.header.stamp = rclpy.time.Time()
+                    stamp_time = rclpy.time.Time.from_msg(pose.header.stamp)
+                    latest_common = self.tf_buffer.get_latest_common_time(target_frame, source_frame)
+                    if latest_common.nanoseconds < stamp_time.nanoseconds:
+                        pose.header.stamp = latest_common.to_msg()
                     return self.tf_buffer.transform(
                         pose,
-                        self.get_parameter("world_frame").value,
+                        target_frame,
                         timeout=rclpy.duration.Duration(seconds=timeout_s),
                     )
                 except Exception as retry_exc:
