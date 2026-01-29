@@ -12,9 +12,9 @@ def generate_launch_description():
                 output="screen",
                 parameters=[
                     {
-                        "rgb_left_topic": "/realsense/rgb/image_rect_raw_left",
-                        "rgb_right_topic": "/realsense/rgb/image_rect_raw_right",
-                        "depth_topic": "/realsense/depth/image_rect_raw",
+                        "rgb_left_topic": "/realsense/rgb/left_image_raw",
+                        "rgb_right_topic": "/realsense/rgb/right_image_raw",
+                        "depth_topic": "/realsense/depth/image",
                         "semantic_topic": "/realsense/semantic/image_rect_raw",
                         "output_dir": "camera_videos",
                         "fps": 15.0,

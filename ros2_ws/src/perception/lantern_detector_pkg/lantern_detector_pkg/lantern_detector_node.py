@@ -11,6 +11,7 @@ from geometry_msgs.msg import PoseStamped
 from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo, Image
 from tf2_ros import Buffer, TransformListener
+import tf2_geometry_msgs  # noqa: F401
 from message_filters import ApproximateTimeSynchronizer, Subscriber
 
 
@@ -25,7 +26,7 @@ class LanternDetectorNode(Node):
         super().__init__("lantern_detector")
 
         self.declare_parameter("semantic_topic", "/realsense/semantic/image_rect_raw")
-        self.declare_parameter("depth_topic", "/realsense/depth/image_rect_raw")
+        self.declare_parameter("depth_topic", "/realsense/depth/image")
         self.declare_parameter("camera_info_topic", "/realsense/semantic/camera_info")
         self.declare_parameter("world_frame", "world")
         self.declare_parameter("body_frame", "body")
@@ -35,7 +36,9 @@ class LanternDetectorNode(Node):
         self.declare_parameter("hsv_lower", [20, 90, 90])
         self.declare_parameter("hsv_upper", [70, 255, 255])
         self.declare_parameter("gating_distance", 2.0)
-        self.declare_parameter("min_observations", 0)
+        self.declare_parameter("min_observations", 10)
+        self.declare_parameter("tf_timeout_s", 0.2)
+        self.declare_parameter("use_latest_tf_on_extrapolation", True)
 
         self.bridge = CvBridge()
         self.camera_info: Optional[CameraInfo] = None
@@ -147,15 +150,29 @@ class LanternDetectorNode(Node):
         pose.pose.position.y = float(body_point[1])
         pose.pose.position.z = float(body_point[2])
         pose.pose.orientation.w = 1.0
+        timeout_s = float(self.get_parameter("tf_timeout_s").value)
+        use_latest = bool(self.get_parameter("use_latest_tf_on_extrapolation").value)
         try:
             world_pose = self.tf_buffer.transform(
                 pose,
                 self.get_parameter("world_frame").value,
-                timeout=rclpy.duration.Duration(seconds=0.1),
+                timeout=rclpy.duration.Duration(seconds=timeout_s),
             )
         except Exception as exc:
-            self.get_logger().warn(f"TF transform failed: {exc}")
-            return None
+            if use_latest and "extrapolation into the future" in str(exc).lower():
+                try:
+                    pose.header.stamp = rclpy.time.Time()
+                    world_pose = self.tf_buffer.transform(
+                        pose,
+                        self.get_parameter("world_frame").value,
+                        timeout=rclpy.duration.Duration(seconds=timeout_s),
+                    )
+                except Exception as retry_exc:
+                    self.get_logger().warn(f"TF transform failed: {retry_exc}")
+                    return None
+            else:
+                self.get_logger().warn(f"TF transform failed: {exc}")
+                return None
 
         return np.array(
             [

@@ -21,9 +21,9 @@ class CameraRecorderNode(Node):
     def __init__(self) -> None:
         super().__init__("camera_recorder")
 
-        self.declare_parameter("rgb_left_topic", "/realsense/rgb/image_rect_raw_left")
-        self.declare_parameter("rgb_right_topic", "/realsense/rgb/image_rect_raw_right")
-        self.declare_parameter("depth_topic", "/realsense/depth/image_rect_raw")
+        self.declare_parameter("rgb_left_topic", "/realsense/rgb/left_image_raw")
+        self.declare_parameter("rgb_right_topic", "/realsense/rgb/right_image_raw")
+        self.declare_parameter("depth_topic", "/realsense/depth/image")
         self.declare_parameter("semantic_topic", "/realsense/semantic/image_rect_raw")
         self.declare_parameter("output_dir", "camera_videos")
         self.declare_parameter("fps", 15.0)
