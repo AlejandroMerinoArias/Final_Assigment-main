@@ -18,12 +18,12 @@ def generate_launch_description():
                 "camera_frame": "",
                 "camera_offset": [0.1, 0.0, 0.0],
                 "use_camera_frame": True,
-                "min_area": 100.0,
+                "min_area": 10.0,
                 "depth_window": 5,
                 "hsv_lower": [20, 90, 90],
                 "hsv_upper": [70, 255, 255],
                 "gating_distance": 2.0,
-                "min_observations": 10,
+                "min_observations": 5,
             }
         ],
     )
