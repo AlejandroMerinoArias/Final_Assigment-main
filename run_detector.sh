@@ -10,4 +10,4 @@ source install/setup.bash
 set -u
 
 export GALLIUM_DRIVER=d3d12
-exec ros2 launch lantern_detector_pkg lantern_detector.launch.py "$@"
+exec ros2 launch perception lantern_detector.launch.py "$@"
