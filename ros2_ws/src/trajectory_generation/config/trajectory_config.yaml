@@ -1,0 +1,16 @@
+trajectory_generation:
+  ros__parameters:
+    max_v: 50.0
+    max_a: 50.0
+    publish_whole_trajectory: false
+    dt: 0.01
+    marker_distance: 0.2
+    path_topic: "waypoints"
+
+    # Optional defaults applied to all waypoints (world frame)
+    # default_waypoint_velocity: [0.0, 0.0, 0.0]
+    # default_waypoint_acceleration: [0.0, 0.0, 0.0]
+
+    # Optional per-waypoint constraints (flattened 3 * N arrays).
+    # waypoint_velocities: [vx0, vy0, vz0, vx1, vy1, vz1]
+    # waypoint_accelerations: [ax0, ay0, az0, ax1, ay1, az1]

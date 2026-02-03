@@ -30,11 +30,4 @@ def generate_launch_description():
         output='screen'
     )
 
-    current_state_relay = Node(
-        package='simulation',
-        executable='current_state_relay_node',
-        name='current_state_relay',
-        output='screen'
-    )
-
-    return LaunchDescription([vnav, w_to_unity, unity_state, current_state_relay])
+    return LaunchDescription([vnav, w_to_unity, unity_state])

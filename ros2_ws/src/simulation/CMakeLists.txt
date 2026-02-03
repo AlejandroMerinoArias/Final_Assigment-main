@@ -92,13 +92,6 @@ ament_target_dependencies(state_estimate_corruptor_node
 )
 target_link_libraries(state_estimate_corruptor_node)
 
-add_executable(current_state_relay_node src/current_state_relay_node.cpp)
-ament_target_dependencies(current_state_relay_node
-  rclcpp
-  nav_msgs
-)
-target_link_libraries(current_state_relay_node)
-
 add_executable(unity_ros src/unity_ros.cpp)
 ament_target_dependencies(unity_ros
   rclcpp
@@ -118,7 +111,6 @@ add_dependencies(unity_ros libsocket)
 install(TARGETS
   w_to_unity
   state_estimate_corruptor_node
-  current_state_relay_node
   unity_ros
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )

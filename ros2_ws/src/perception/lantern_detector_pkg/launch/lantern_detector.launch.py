@@ -16,11 +16,11 @@ def generate_launch_description():
                 "world_frame": "world",
                 "body_frame": "body",
                 "camera_offset": [0.1, 0.0, 0.0],
-                "min_area": 10.0,
+                "min_area": 5.0,
                 "depth_window": 5,
                 "hsv_lower": [20, 70, 70],
                 "hsv_upper": [70, 255, 255],
-                "gating_distance": 5.0,
+                "gating_distance": 2.0,
                 "min_observations": 5,
             }
         ],

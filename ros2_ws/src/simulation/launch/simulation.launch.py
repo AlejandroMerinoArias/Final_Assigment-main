@@ -26,6 +26,7 @@ def generate_launch_description():
     semantic_image_topic = LaunchConfiguration("semantic_image_topic")
     semantic_info_topic = LaunchConfiguration("semantic_info_topic")
 
+
     # Declare args
     declared_args = [
         DeclareLaunchArgument("load_params", default_value="true"),
@@ -107,18 +108,13 @@ def generate_launch_description():
         output="screen",
     )
 
-    current_state_relay = Node(
-        package="simulation",
-        executable="current_state_relay_node",
-        name="current_state_relay",
-        output="screen",
-    )
-
     controller_node = Node(
         package="controller_pkg",
         executable="controller_node",
         name="controller_node",
         output="screen",
+        parameters=[PathJoinSubstitution([FindPackageShare("controller_pkg"), "config", "controller_params.yaml"])],
+        remappings=[("/current_state", "/current_state_est")],
     )
 
     # Static TF publishers (ROS2 CLI style args; verify for your ROS2 distro)
@@ -175,7 +171,6 @@ def generate_launch_description():
             state_estimate_corruptor,
             state_estimate_corruptor_disabled,
             w_to_unity,
-            current_state_relay,
             controller_node,
             *static_tf_nodes,
         ]
