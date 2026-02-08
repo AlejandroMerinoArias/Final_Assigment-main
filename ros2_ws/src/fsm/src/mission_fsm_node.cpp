@@ -51,6 +51,9 @@ MissionFsmNode::MissionFsmNode()
   trajectory_pub_ = this->create_publisher<trajectory_msgs::msg::MultiDOFJointTrajectory>(
     "/command/trajectory", 10);
 
+  waypoint_path_pub_ = this->create_publisher<nav_msgs::msg::Path>(
+    "waypoints", rclcpp::QoS(1).transient_local().reliable());
+
   cancel_pub_ = this->create_publisher<std_msgs::msg::Empty>(
     "/fsm/cancel", 10);
 
@@ -240,10 +243,11 @@ void MissionFsmNode::on_state_enter(MissionState state)
 
         RCLCPP_INFO(this->get_logger(), "Takeoff Target (current_state_est): [%.2f, %.2f, %.2f]", target_x, target_y, target_z);
 
-        publish_trajectory_goal(
-          target_x,
-          target_y,
-          target_z);
+        geometry_msgs::msg::Point target;
+        target.x = target_x;
+        target.y = target_y;
+        target.z = target_z;
+        publish_waypoint_path({target});
       }
       goal_active_ = true;
       break;
@@ -251,7 +255,7 @@ void MissionFsmNode::on_state_enter(MissionState state)
     case MissionState::GOTO_ENTRANCE:
       RCLCPP_INFO(this->get_logger(), "Navigating to cave entrance: [%.2f, %.2f, %.2f]",
                   cave_entrance_.x, cave_entrance_.y, cave_entrance_.z);
-      publish_trajectory_goal(cave_entrance_.x, cave_entrance_.y, cave_entrance_.z);
+      publish_waypoint_path({cave_entrance_});
       goal_active_ = true;
       break;
 
@@ -471,6 +475,36 @@ void MissionFsmNode::publish_trajectory_goal(double x, double y, double z, doubl
   current_goal_.z = z;
 
   RCLCPP_DEBUG(this->get_logger(), "Published trajectory goal: [%.2f, %.2f, %.2f]", x, y, z);
+}
+
+void MissionFsmNode::publish_waypoint_path(
+  const std::vector<geometry_msgs::msg::Point>& waypoints)
+{
+  if (waypoints.empty()) {
+    RCLCPP_WARN(this->get_logger(), "Requested to publish empty waypoint path.");
+    return;
+  }
+
+  nav_msgs::msg::Path path_msg;
+  path_msg.header.stamp = this->now();
+  path_msg.header.frame_id = "world";
+  path_msg.poses.reserve(waypoints.size());
+
+  for (const auto& waypoint : waypoints) {
+    geometry_msgs::msg::PoseStamped pose;
+    pose.header = path_msg.header;
+    pose.pose.position = waypoint;
+    pose.pose.orientation.w = 1.0;
+    path_msg.poses.push_back(pose);
+  }
+
+  waypoint_path_pub_->publish(path_msg);
+
+  current_goal_ = waypoints.back();
+
+  RCLCPP_INFO(
+    this->get_logger(), "Published waypoint path with %zu poses. Goal: [%.2f, %.2f, %.2f]",
+    waypoints.size(), current_goal_.x, current_goal_.y, current_goal_.z);
 }
 
 void MissionFsmNode::publish_state()

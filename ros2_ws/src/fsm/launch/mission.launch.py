@@ -110,7 +110,27 @@ def generate_launch_description():
     )
 
     # =================================================================
-    # 5. RViz2 for Visualization
+    # 5. Trajectory Generation Node (waypoints -> command/trajectory)
+    # =================================================================
+    trajectory_config = PathJoinSubstitution([
+        FindPackageShare("trajectory_generation"),
+        "config",
+        "trajectory_config.yaml"
+    ])
+
+    trajectory_generation_node = Node(
+        package="trajectory_generation",
+        executable="trajectory_generation_node",
+        name="trajectory_generation",
+        output="screen",
+        parameters=[trajectory_config],
+        remappings=[
+            ("odom", "/current_state_est"),
+        ],
+    )
+
+    # =================================================================
+    # 6. RViz2 for Visualization
     # =================================================================
     rviz_node = Node(
         package='rviz2',
@@ -134,5 +154,6 @@ def generate_launch_description():
         octomap_node,
         # FSM & Visualization
         fsm_node,
+        trajectory_generation_node,
         rviz_node,
     ])

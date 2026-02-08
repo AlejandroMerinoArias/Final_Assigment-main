@@ -7,6 +7,7 @@
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/pose.hpp>
 #include <nav_msgs/msg/odometry.hpp>
+#include <nav_msgs/msg/path.hpp>
 #include <trajectory_msgs/msg/multi_dof_joint_trajectory.hpp>
 #include <trajectory_msgs/msg/multi_dof_joint_trajectory_point.hpp>
 #include <geometry_msgs/msg/transform.hpp>
@@ -80,6 +81,7 @@ private:
   double calculate_distance(const geometry_msgs::msg::Point& p1, 
                             const geometry_msgs::msg::Point& p2) const;
   void publish_trajectory_goal(double x, double y, double z, double yaw = 0.0);
+  void publish_waypoint_path(const std::vector<geometry_msgs::msg::Point>& waypoints);
   void publish_state();
   void publish_drone_marker();
   bool is_goal_blacklisted(const geometry_msgs::msg::Point& goal) const;
@@ -93,6 +95,7 @@ private:
 
   // --- Publishers ---
   rclcpp::Publisher<trajectory_msgs::msg::MultiDOFJointTrajectory>::SharedPtr trajectory_pub_;
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr waypoint_path_pub_;
   rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr cancel_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr planner_goal_pub_;
