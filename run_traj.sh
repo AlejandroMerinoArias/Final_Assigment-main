@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -eo pipefail  # quitamos -u globalmente o lo gestionamos manualmente
 
-cd $HOME/Final_Assigment/Final_Assigment-main/ros2_ws
+cd $HOME/Final_Assigment/Final_Assigment-test/ros2_ws
 
 
 set +u
@@ -10,4 +10,4 @@ source install/setup.bash
 set -u
 
 export GALLIUM_DRIVER=d3d12
-exec ros2 launch basic_waypoint_pkg waypoint_mission.launch.py "$@"
+exec ros2 launch trajectory_generation waypoint_mission.launch.py "$@"

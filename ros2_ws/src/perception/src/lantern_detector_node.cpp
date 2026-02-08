@@ -56,6 +56,37 @@ std::optional<double> MedianOf(std::vector<float> values) {
   return 0.5 * (static_cast<double>(lower) + static_cast<double>(upper));
 }
 
+std::optional<double> DepthAtPixel(const cv::Mat & depth, int u, int v) {
+  if (u < 0 || v < 0 || u >= depth.cols || v >= depth.rows) {
+    return std::nullopt;
+  }
+  switch (depth.type()) {
+    case CV_16U: {
+      const uint16_t value = depth.at<uint16_t>(v, u);
+      if (value == 0) {
+        return std::nullopt;
+      }
+      return static_cast<double>(value) / 1000.0;
+    }
+    case CV_32F: {
+      const float value = depth.at<float>(v, u);
+      if (!std::isfinite(value) || value <= 0.0f) {
+        return std::nullopt;
+      }
+      return static_cast<double>(value);
+    }
+    case CV_64F: {
+      const double value = depth.at<double>(v, u);
+      if (!std::isfinite(value) || value <= 0.0) {
+        return std::nullopt;
+      }
+      return value;
+    }
+    default:
+      return std::nullopt;
+  }
+}
+
 std::string ToLower(std::string value) {
   std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
     return static_cast<char>(std::tolower(c));
@@ -75,11 +106,11 @@ public:
     declare_parameter<std::string>("body_frame", "body");
     declare_parameter<std::vector<double>>("camera_offset", {0.1, 0.0, 0.0});
     declare_parameter<double>("min_area", 5.0);
-    declare_parameter<int>("depth_window", 5);
+    declare_parameter<double>("depth_window_scale", 0.5);
     declare_parameter<std::vector<int64_t>>("hsv_lower", {20, 70, 70});
     declare_parameter<std::vector<int64_t>>("hsv_upper", {70, 255, 255});
-    declare_parameter<double>("gating_distance", 2.0);
-    declare_parameter<int>("min_observations", 5);
+    declare_parameter<double>("gating_distance", 5.0);
+    declare_parameter<int>("min_observations", 10);
     declare_parameter<double>("tf_timeout_s", 0.2);
     declare_parameter<bool>("use_latest_tf_on_extrapolation", true);
 
@@ -141,7 +172,11 @@ private:
         continue;
       }
 
-      auto depth_m = SampleDepth(depth, *centroid);
+      const int depth_window = ComputeDepthWindow(area);
+        auto depth_m = SampleDepthFromMask(depth, mask, contour);
+      if (!depth_m) {
+        depth_m = SampleDepth(depth, *centroid, depth_window);
+      }
       if (!depth_m || std::isnan(*depth_m) || *depth_m <= 0.0) {
         continue;
       }
@@ -180,8 +215,17 @@ private:
     return mask;
   }
 
-  std::optional<double> SampleDepth(const cv::Mat & depth, const std::pair<int, int> & centroid) {
-    const int window = get_parameter("depth_window").as_int();
+  int ComputeDepthWindow(double contour_area) {
+    const double scale = get_parameter("depth_window_scale").as_double();
+    const double safe_area = std::max(0.0, contour_area);
+    const int window = static_cast<int>(std::round(std::sqrt(safe_area) * scale));
+    return std::max(1, window);
+  }
+
+  std::optional<double> SampleDepth(
+    const cv::Mat & depth,
+    const std::pair<int, int> & centroid,
+    int window) {
     const int half = std::max(1, window / 2);
     const int u = centroid.first;
     const int v = centroid.second;
@@ -216,6 +260,59 @@ private:
       }
     }
     return MedianOf(values);
+  }
+
+   std::optional<double> SampleDepthFromMask(
+    const cv::Mat & depth,
+    const cv::Mat & mask,
+    const std::vector<cv::Point> & contour) {
+    if (depth.empty() || mask.empty()) {
+      return std::nullopt;
+    }
+
+    const cv::Rect bounds(0, 0, depth.cols, depth.rows);
+    cv::Rect roi = cv::boundingRect(contour) & bounds;
+    if (roi.width <= 0 || roi.height <= 0) {
+      return std::nullopt;
+    }
+
+    struct DepthSample {
+      float depth;
+      cv::Point point;
+    };
+    std::vector<DepthSample> samples;
+    samples.reserve(static_cast<size_t>(roi.area()));
+
+    for (int y = roi.y; y < roi.y + roi.height; ++y) {
+      const uint8_t * mask_row = mask.ptr<uint8_t>(y);
+      for (int x = roi.x; x < roi.x + roi.width; ++x) {
+        if (mask_row[x] == 0) {
+          continue;
+        }
+        if (cv::pointPolygonTest(contour, cv::Point2f(x, y), false) < 0.0) {
+          continue;
+        }
+        auto depth_value = DepthAtPixel(depth, x, y);
+        if (!depth_value || !std::isfinite(*depth_value) || *depth_value <= 0.0) {
+          continue;
+        }
+        samples.push_back({static_cast<float>(*depth_value), cv::Point(x, y)});
+      }
+    }
+
+    if (samples.empty()) {
+      return std::nullopt;
+    }
+
+    std::sort(samples.begin(), samples.end(),
+      [](const DepthSample & a, const DepthSample & b) { return a.depth < b.depth; });
+    const size_t subset = std::max<size_t>(1, samples.size() / 5);
+    std::vector<float> closest_depths;
+    closest_depths.reserve(subset);
+    for (size_t i = 0; i < subset; ++i) {
+      closest_depths.push_back(samples[i].depth);
+    }
+    return MedianOf(closest_depths);
   }
 
   std::optional<std::array<double, 3>> ProjectToCamera(

@@ -17,7 +17,7 @@ def generate_launch_description():
                 "body_frame": "body",
                 "camera_offset": [0.1, 0.0, 0.0],
                 "min_area": 5.0,
-                "depth_window": 5,
+                "depth_window_scale": 0.5,
                 "hsv_lower": [20, 70, 70],
                 "hsv_upper": [70, 255, 255],
                 "gating_distance": 2.0,
@@ -37,4 +37,19 @@ def generate_launch_description():
             }
         ]
     )
-    return LaunchDescription([detector_node, logger_node])
+    marker_node = Node(
+        package="perception",
+        executable="lantern_marker",
+        name="lantern_marker",
+        output="screen",
+        parameters=[
+            {
+                "detections_topic": "/detected_lanterns",
+                "marker_topic": "/lantern_marker",
+                "shaft_length": 0.6,
+                "shaft_diameter": 0.08,
+                "head_diameter": 0.14,
+            }
+        ],
+    )
+    return LaunchDescription([detector_node, logger_node, marker_node])

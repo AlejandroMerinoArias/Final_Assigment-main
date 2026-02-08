@@ -14,7 +14,9 @@ find_package(OpenCV REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
+find_package(tf2_sensor_msgs REQUIRED)
 find_package(message_filters REQUIRED)
+find_package(visualization_msgs REQUIRED)
 
 add_executable(lantern_detector src/lantern_detector_node.cpp)
 ament_target_dependencies(lantern_detector
@@ -35,9 +37,27 @@ ament_target_dependencies(lantern_detection_logger
   geometry_msgs
 )
 
+add_executable(lantern_marker src/lantern_marker_node.cpp)
+ament_target_dependencies(lantern_marker
+  rclcpp
+  geometry_msgs
+  visualization_msgs
+)
+
+add_executable(pointcloud_transformer_node src/pointcloud_transformer.cpp)
+ament_target_dependencies(pointcloud_transformer_node
+  rclcpp
+  sensor_msgs
+  tf2_ros
+  tf2_sensor_msgs
+  geometry_msgs
+)
+
 install(TARGETS
   lantern_detector
   lantern_detection_logger
+  lantern_marker
+  pointcloud_transformer_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
