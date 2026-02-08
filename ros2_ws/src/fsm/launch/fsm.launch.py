@@ -6,7 +6,7 @@ def generate_launch_description():
     """Launch the Mission FSM node for testing."""
     return LaunchDescription([
         Node(
-            package='FSM',
+            package='fsm',
             executable='mission_fsm_node',
             name='mission_fsm_node',
             output='screen',

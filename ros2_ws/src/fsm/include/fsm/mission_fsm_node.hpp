@@ -11,6 +11,7 @@
 #include <trajectory_msgs/msg/multi_dof_joint_trajectory_point.hpp>
 #include <geometry_msgs/msg/transform.hpp>
 #include <geometry_msgs/msg/twist.hpp>
+#include <visualization_msgs/msg/marker.hpp>
 
 #include <vector>
 #include <string>
@@ -80,6 +81,7 @@ private:
                             const geometry_msgs::msg::Point& p2) const;
   void publish_trajectory_goal(double x, double y, double z, double yaw = 0.0);
   void publish_state();
+  void publish_drone_marker();
   bool is_goal_blacklisted(const geometry_msgs::msg::Point& goal) const;
 
   // --- Subscribers ---
@@ -94,6 +96,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr cancel_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr planner_goal_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr drone_marker_pub_;
 
   // --- Timer ---
   rclcpp::TimerBase::SharedPtr timer_;

@@ -1,5 +1,5 @@
 #include <rclcpp/rclcpp.hpp>
-#include "FSM/mission_fsm_node.hpp"
+#include "fsm/mission_fsm_node.hpp"
 
 int main(int argc, char** argv)
 {

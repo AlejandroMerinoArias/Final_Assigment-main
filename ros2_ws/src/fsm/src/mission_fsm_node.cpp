@@ -1,4 +1,4 @@
-#include "FSM/mission_fsm_node.hpp"
+#include "fsm/mission_fsm_node.hpp"
 
 namespace control
 {
@@ -18,10 +18,10 @@ MissionFsmNode::MissionFsmNode()
   start_position_.y = 0.0;
   start_position_.z = 0.0;
   
-  // Cave entrance - TODO: Set actual coordinates
-  cave_entrance_.x = 10.0;
-  cave_entrance_.y = 0.0;
-  cave_entrance_.z = 2.0;
+  // Cave entrance - Main entrance
+  cave_entrance_.x = -320.0;
+  cave_entrance_.y = 10.0;
+  cave_entrance_.z = 18.0;
 
   // Z-retry altitudes: start with default, then try lower, then higher
   z_retry_altitudes_ = {1.5, 1.0, 2.0, 0.75, 2.5};
@@ -59,6 +59,9 @@ MissionFsmNode::MissionFsmNode()
 
   planner_goal_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(
     "/planner/goal", 10);
+
+  drone_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>(
+    "/fsm/drone_marker", 10);
 
   // --- Timer: 10 Hz main loop ---
   timer_ = this->create_wall_timer(
@@ -123,6 +126,7 @@ void MissionFsmNode::timer_callback()
 {
   update_state();
   publish_state();
+  publish_drone_marker();
 }
 
 void MissionFsmNode::planner_status_callback(const std_msgs::msg::String::SharedPtr msg)
@@ -227,10 +231,20 @@ void MissionFsmNode::on_state_enter(MissionState state)
   switch (state) {
     case MissionState::TAKEOFF:
       RCLCPP_INFO(this->get_logger(), "Taking off to altitude: %.2f m", takeoff_altitude_);
-      publish_trajectory_goal(
-        current_pose_.position.x,
-        current_pose_.position.y,
-        takeoff_altitude_);
+      
+      // Use current_state_est for takeoff position
+      {
+        double target_x = current_pose_.position.x;
+        double target_y = current_pose_.position.y;
+        double target_z = current_pose_.position.z + 5.0; // Ascend 5m relative to start
+
+        RCLCPP_INFO(this->get_logger(), "Takeoff Target (current_state_est): [%.2f, %.2f, %.2f]", target_x, target_y, target_z);
+
+        publish_trajectory_goal(
+          target_x,
+          target_y,
+          target_z);
+      }
       goal_active_ = true;
       break;
 
@@ -296,7 +310,7 @@ void MissionFsmNode::update_state()
         // Logging for user feedback
         if (!pose_received_) {
             RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000, 
-                                 "Waiting for initial pose...");
+                                 "Waiting for initial pose from /current_state_est...");
         } else if (!mission_start_signal_received_) {
             RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000, 
                                  "Waiting for start signal (publish empty message to /mission/start)...");
@@ -307,7 +321,7 @@ void MissionFsmNode::update_state()
     case MissionState::TAKEOFF:
       // Check if takeoff altitude reached
       if (goal_active_) {
-        double alt_diff = std::abs(current_pose_.position.z - takeoff_altitude_);
+        double alt_diff = std::abs(current_pose_.position.z - current_goal_.z);
         if (alt_diff < GOAL_REACHED_THRESHOLD) {
           RCLCPP_INFO(this->get_logger(), "Takeoff complete. Altitude: %.2f m", 
                       current_pose_.position.z);
@@ -464,6 +478,39 @@ void MissionFsmNode::publish_state()
   std_msgs::msg::String state_msg;
   state_msg.data = state_to_string(current_state_);
   state_pub_->publish(state_msg);
+}
+
+void MissionFsmNode::publish_drone_marker()
+{
+  if (!pose_received_) {
+    return;
+  }
+
+  visualization_msgs::msg::Marker marker;
+  marker.header.stamp = this->now();
+  marker.header.frame_id = "world";
+  marker.ns = "drone_position";
+  marker.id = 0;
+  marker.type = visualization_msgs::msg::Marker::SPHERE;
+  marker.action = visualization_msgs::msg::Marker::ADD;
+
+  // Position from current_state_est
+  marker.pose = current_pose_;
+
+  // Scale (size of the sphere)
+  marker.scale.x = 0.5;
+  marker.scale.y = 0.5;
+  marker.scale.z = 0.5;
+
+  // Color (green sphere for drone)
+  marker.color.r = 0.0;
+  marker.color.g = 1.0;
+  marker.color.b = 0.0;
+  marker.color.a = 1.0;
+
+  marker.lifetime = rclcpp::Duration::from_seconds(0);  // Persistent until updated
+
+  drone_marker_pub_->publish(marker);
 }
 
 bool MissionFsmNode::is_goal_blacklisted(const geometry_msgs::msg::Point& goal) const

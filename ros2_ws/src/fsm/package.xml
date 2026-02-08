@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>FSM</name>
+  <name>fsm</name>
   <version>0.0.1</version>
   <description>Mission control package containing the FSM (Finite State Machine) for orchestrating the drone's autonomous mission.</description>
   <maintainer email="as2025@tum.de">TUM AS Team</maintainer>
@@ -16,6 +16,7 @@
   <depend>trajectory_msgs</depend>
   <depend>tf2</depend>
   <depend>tf2_ros</depend>
+  <depend>visualization_msgs</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

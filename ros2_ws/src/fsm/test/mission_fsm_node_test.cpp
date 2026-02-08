@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 #include <rclcpp/rclcpp.hpp>
-#include "FSM/mission_fsm_node.hpp"
+#include "fsm/mission_fsm_node.hpp"
 #include <nav_msgs/msg/odometry.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
