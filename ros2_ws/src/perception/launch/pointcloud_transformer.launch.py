@@ -9,13 +9,13 @@ def generate_launch_description():
     # ---------------------------------------------------------
     # Connects 'true_body' to the camera frame 'Quadrotor/Sensors/DepthCamera'.
     # Translation: x=0.1m (your measurement), y=0, z=0
-    # Rotation: 0 0 0 1 (Quaternions for no rotation)
-    # NOTE: If your points look "sideways" in RViz, change the rotation here.
+    # Rotation is provided as yaw/pitch/roll (radians).
+    # NOTE: If your points look "sideways" in RViz, adjust the yaw here.
     body_to_camera_tf = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
         name='body_to_camera_tf',
-        arguments=['0.1', '0', '0', '0', '0', '-1.5708', 'true_body', 'Quadrotor/Sensors/DepthCamera']
+        arguments=['0.1', '0', '0', '-1.5708', '0', '-1.5708', 'body', 'Quadrotor/Sensors/DepthCamera']
     )
 
     # ---------------------------------------------------------

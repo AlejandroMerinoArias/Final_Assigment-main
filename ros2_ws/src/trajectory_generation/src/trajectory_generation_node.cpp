@@ -1,6 +1,11 @@
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <memory>
 #include <string>
+#include <vector>
+
+#include <Eigen/Dense>
 
 #include "mav_msgs/conversions.hpp"
 #include "mav_msgs/default_topics.hpp"
@@ -9,6 +14,7 @@
 #include "trajectory_msgs/msg/multi_dof_joint_trajectory.hpp"
 #include "visualization_msgs/msg/marker_array.hpp"
 
+#include "mav_trajectory_generation/trajectory_sampling.h"
 #include "trajectory_generation/planner.hpp"
 
 using namespace std::chrono_literals;
@@ -70,6 +76,13 @@ private:
 
     trajectory_ = trajectory;
     last_frame_id_ = path->header.frame_id.empty() ? "world" : path->header.frame_id;
+    segment_times_ = trajectory_.getSegmentTimes();
+    mav_msgs::EigenTrajectoryPoint start_point;
+    bool has_start_point = mav_trajectory_generation::sampleTrajectoryAtTime(
+      trajectory_, 0.0, &start_point);
+    const double start_yaw = has_start_point ? start_point.getYaw() : 0.0;
+    segment_yaws_ = computeSegmentYaws(*path, segment_times_.size(), has_start_point,
+      start_point.position_W, start_yaw);
 
     visualization_msgs::msg::MarkerArray markers;
     planner_->drawMavTrajectory(trajectory_, marker_distance_, last_frame_id_, &markers);
@@ -84,6 +97,10 @@ private:
       mav_msgs::EigenTrajectoryPoint::Vector trajectory_points;
       mav_trajectory_generation::sampleWholeTrajectory(
         trajectory_, dt_, &trajectory_points);
+      for (size_t i = 0; i < trajectory_points.size(); ++i) {
+        const double sample_time = static_cast<double>(i) * dt_;
+        trajectory_points[i].setFromYaw(yawForTime(sample_time));
+      }
 
       trajectory_msgs::msg::MultiDOFJointTrajectory msg_pub;
       mav_msgs::msgMultiDofJointTrajectoryFromEigen(trajectory_points, &msg_pub);
@@ -112,6 +129,7 @@ private:
         return;
       }
 
+      trajectory_point.setFromYaw(yawForTime(current_sample_time_));
       mav_msgs::msgMultiDofJointTrajectoryFromEigen(trajectory_point, &msg);
 
       if (!msg.points.empty()) {
@@ -130,6 +148,106 @@ private:
     }
   }
 
+  std::vector<double> computeWaypointYaws(
+    const nav_msgs::msg::Path & path,
+    bool has_start_position,
+    const Eigen::Vector3d & start_position,
+    double start_yaw) const
+  {
+    const size_t waypoint_count = path.poses.size();
+    std::vector<double> yaws;
+    if (waypoint_count == 0) {
+      return yaws;
+    }
+
+    yaws.reserve(waypoint_count);
+    if (waypoint_count == 1) {
+      if (has_start_position) {
+        const auto & waypoint = path.poses.front().pose.position;
+        const double dx = waypoint.x - start_position.x();
+        const double dy = waypoint.y - start_position.y();
+        if (std::abs(dx) < 1e-6 && std::abs(dy) < 1e-6) {
+          yaws.push_back(start_yaw);
+        } else {
+          yaws.push_back(std::atan2(dy, dx));
+        }
+      } else {
+        yaws.push_back(0.0);
+      }
+      return yaws;
+    }
+
+    for (size_t i = 0; i + 1 < waypoint_count; ++i) {
+      const auto & current = path.poses[i].pose.position;
+      const auto & next = path.poses[i + 1].pose.position;
+      const double dx = next.x - current.x;
+      const double dy = next.y - current.y;
+      if (std::abs(dx) < 1e-6 && std::abs(dy) < 1e-6) {
+        if (!yaws.empty()) {
+          yaws.push_back(yaws.back());
+        } else if (has_start_position) {
+          yaws.push_back(start_yaw);
+        } else {
+          yaws.push_back(0.0);
+        }
+      } else {
+        yaws.push_back(std::atan2(dy, dx));
+      }
+    }
+
+    yaws.push_back(yaws.back());
+    return yaws;
+  }
+
+  std::vector<double> computeSegmentYaws(
+    const nav_msgs::msg::Path & path,
+    size_t segment_count,
+    bool has_start_position,
+    const Eigen::Vector3d & start_position,
+    double start_yaw) const
+  {
+    std::vector<double> segment_yaws;
+    segment_yaws.reserve(segment_count);
+    const std::vector<double> waypoint_yaws = computeWaypointYaws(
+      path, has_start_position, start_position, start_yaw);
+    for (size_t i = 0; i < segment_count; ++i) {
+      if (waypoint_yaws.empty()) {
+        segment_yaws.push_back(0.0);
+        continue;
+      }
+
+      if (i == 0) {
+        segment_yaws.push_back(waypoint_yaws.front());
+        continue;
+      }
+
+      const bool is_last_segment = (i == segment_count - 1);
+      const size_t waypoint_index =
+        is_last_segment ? waypoint_yaws.size() - 1 : std::min(i - 1, waypoint_yaws.size() - 1);
+      segment_yaws.push_back(waypoint_yaws[waypoint_index]);
+    }
+
+    return segment_yaws;
+  }
+
+  double yawForTime(double sample_time) const
+  {
+    if (segment_times_.empty() || segment_yaws_.empty()) {
+      return 0.0;
+    }
+
+    double accumulated_time = 0.0;
+    for (size_t i = 0; i < segment_times_.size(); ++i) {
+      accumulated_time += segment_times_[i];
+      if (sample_time <= accumulated_time || i == segment_times_.size() - 1) {
+        const size_t yaw_index = std::min(i, segment_yaws_.size() - 1);
+        return segment_yaws_[yaw_index];
+      }
+    }
+
+    return segment_yaws_.back();
+  }
+
   std::unique_ptr<TrajectoryPlanner> planner_;
   rclcpp::Publisher<trajectory_msgs::msg::MultiDOFJointTrajectory>::SharedPtr command_pub_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
@@ -145,6 +263,8 @@ private:
   std::string last_frame_id_;
 
   mav_trajectory_generation::Trajectory trajectory_;
+  std::vector<double> segment_times_;
+  std::vector<double> segment_yaws_;
 };
 
 int main(int argc, char ** argv)

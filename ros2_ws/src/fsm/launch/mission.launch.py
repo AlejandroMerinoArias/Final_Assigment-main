@@ -55,7 +55,7 @@ def generate_launch_description():
         package='tf2_ros',
         executable='static_transform_publisher',
         name='body_to_camera_tf',
-        arguments=['0.1', '0', '0', '0', '0', '-1.5708', 'true_body', 'Quadrotor/Sensors/DepthCamera']
+        arguments=['0.1', '0', '0', '-1.5708', '0', '-1.5708', 'body', 'Quadrotor/Sensors/DepthCamera']
     )
 
     # C++ PointCloud Transformer: transforms points to 'world' frame
@@ -141,11 +141,68 @@ def generate_launch_description():
     )
 
     # =================================================================
+    # 7. Lantern Detector
+    # =================================================================
+    lantern_detector_node = Node(
+        package="perception",
+        executable="lantern_detector",
+        name="lantern_detector",
+        output="screen",
+        parameters=[
+            {
+                "semantic_topic": "/realsense/semantic/image_rect_raw",
+                "depth_topic": "/realsense/depth/image",
+                "camera_info_topic": "/realsense/semantic/camera_info",
+                "world_frame": "world",
+                "body_frame": "body",
+                "camera_offset": [0.1, 0.0, 0.0],
+                "min_area": 5.0,
+                "depth_window_scale": 0.5,
+                "hsv_lower": [20, 70, 70],
+                "hsv_upper": [70, 255, 255],
+                "gating_distance": 2.0,
+                "min_observations": 5,
+            }
+        ],
+    )
+
+    lantern_logger_node = Node(
+        package="perception",
+        executable="lantern_detection_logger",
+        name="lantern_detection_logger",
+        output="screen",
+        parameters=[
+            {
+                "detections_topic": "/detected_lanterns",
+                "output_file": "lantern_detections.txt",
+            }
+        ],
+    )
+
+    lantern_marker_node = Node(
+        package="perception",
+        executable="lantern_marker",
+        name="lantern_marker",
+        output="screen",
+        parameters=[
+            {
+                "detections_topic": "/detected_lanterns",
+                "marker_topic": "/lantern_marker",
+                "sphere_diameter": 0.3,
+            }
+        ],
+    )
+
+
+    # =================================================================
     # Launch Description
     # =================================================================
     return LaunchDescription([
         # Arguments
         resolution_arg,
+        # Lantern detection
+        lantern_detector_node,
+        lantern_logger_node,
         # Perception pipeline
         depth_container,
         body_to_camera_tf,
@@ -155,5 +212,6 @@ def generate_launch_description():
         # FSM & Visualization
         fsm_node,
         trajectory_generation_node,
+        lantern_marker_node,
         rviz_node,
     ])

@@ -11,9 +11,7 @@ public:
   : Node("lantern_marker"), marker_id_(0) {
     declare_parameter<std::string>("detections_topic", "/detected_lanterns");
     declare_parameter<std::string>("marker_topic", "/lantern_marker");
-    declare_parameter<double>("shaft_length", 0.6);
-    declare_parameter<double>("shaft_diameter", 0.08);
-    declare_parameter<double>("head_diameter", 0.14);
+    declare_parameter<double>("sphere_diameter", 0.3);
 
     const auto detections_topic = get_parameter("detections_topic").as_string();
     const auto marker_topic = get_parameter("marker_topic").as_string();
@@ -32,7 +30,7 @@ private:
     marker.header = msg->header;
     marker.ns = "lanterns";
     marker.id = marker_id_++;
-    marker.type = visualization_msgs::msg::Marker::ARROW;
+    marker.type = visualization_msgs::msg::Marker::SPHERE;
     marker.action = visualization_msgs::msg::Marker::ADD;
     marker.pose = msg->pose;
 
@@ -41,9 +39,10 @@ private:
       marker.pose.orientation.w = 1.0;
     }
 
-    marker.scale.x = get_parameter("shaft_length").as_double();
-    marker.scale.y = get_parameter("shaft_diameter").as_double();
-    marker.scale.z = get_parameter("head_diameter").as_double();
+    const auto sphere_diameter = get_parameter("sphere_diameter").as_double();
+    marker.scale.x = sphere_diameter;
+    marker.scale.y = sphere_diameter;
+    marker.scale.z = sphere_diameter;
 
     marker.color.r = 1.0f;
     marker.color.g = 1.0f;
