@@ -8,4 +8,4 @@ source /opt/ros/jazzy/setup.bash
 source install/setup.bash
 set -u
 
-exec ros2 topic pub --once /mission/start std_msgs/msg/Empty "{}
+ros2 topic pub --once /mission/start std_msgs/msg/Empty "{}"
