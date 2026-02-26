@@ -1,16 +1,33 @@
 trajectory_generation:
   ros__parameters:
-    max_v: 50.0
-    max_a: 50.0
+    # Dynamic constraints - these are UPPER BOUNDS (inequality constraints)
+    max_v: 30.0    # m/s — maximum velocity magnitude for safe cave navigation
+    max_a: 3.0    # m/s² — maximum acceleration magnitude to prevent overshoot on turns
+    
     publish_whole_trajectory: false
     dt: 0.01
     marker_distance: 0.2
     path_topic: "waypoints"
 
     # Optional defaults applied to all waypoints (world frame)
-    # default_waypoint_velocity: [0.0, 0.0, 0.0]
+    # Setting non-zero default_waypoint_velocity encourages fly-through behavior
+    # at intermediate waypoints, preventing the MAV from slowing to near-zero.
+    # This is an EQUALITY constraint at each waypoint.
+    # 
+    # IMPORTANT: With frequent replanning (~0.5 Hz), the trajectory generator now:
+    #   1. Starts each new trajectory from the actual current velocity (not zero)
+    #   2. Uses these waypoint velocities to maintain smooth motion through waypoints
+    # 
+    # Recommended values for continuous exploration:
+    #   - Leave commented if you want optimizer to choose freely (may slow at waypoints)
+    #   - Set to small non-zero (e.g., [0.3, 0.0, 0.0]) for gentle fly-through
+    #   - Increase (e.g., [0.8, 0.0, 0.0]) for more aggressive continuous motion
+    # 
+    # Note: These are in world frame. For path-aligned velocities, use waypoint_velocities instead.
+    # default_waypoint_velocity: [0.5, 0.0, 0.0]
     # default_waypoint_acceleration: [0.0, 0.0, 0.0]
 
     # Optional per-waypoint constraints (flattened 3 * N arrays).
+    # Use these for precise control over velocity/acceleration at each specific waypoint.
     # waypoint_velocities: [vx0, vy0, vz0, vx1, vy1, vz1]
     # waypoint_accelerations: [ax0, ay0, az0, ax1, ay1, az1]

@@ -13,7 +13,8 @@ if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 14)
 endif()
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  add_compile_options(-Wall -Wextra -Wpedantic)
+  # Removed -Wall -Wextra -Wpedantic to suppress unused parameter warnings in mav_trajectory_generation
+  add_compile_options(-Wno-unused-parameter)
 endif()
 
 # ==== Dependencies ====
@@ -35,6 +36,8 @@ find_package(tf2 REQUIRED)
 find_package(tf2_eigen REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
+find_package(octomap REQUIRED)
+find_package(octomap_msgs REQUIRED)
 
 set(MAV_TRAJECTORY_LIB mav_trajectory_generation)
 
@@ -186,6 +189,7 @@ ament_target_dependencies(trajectory_generation_node
   Eigen3
   yaml-cpp
 )
+
 
 # ==== Tests ====
 # Only if you actually want to build the tests when BUILD_TESTING is ON.

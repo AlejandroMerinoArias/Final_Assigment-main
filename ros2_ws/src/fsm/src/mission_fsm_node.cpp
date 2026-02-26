@@ -1,84 +1,117 @@
 #include "fsm/mission_fsm_node.hpp"
 
-namespace control
-{
+namespace control {
 
 MissionFsmNode::MissionFsmNode()
-: Node("mission_fsm_node"),
-  current_state_(MissionState::INIT),
-  pose_received_(false),
-  mission_start_signal_received_(false),
-  goal_active_(false),
-  lanterns_found_count_(0),
-  takeoff_altitude_(2.0),
-  z_retry_index_(0)
-{
+    : Node("mission_fsm_node"), current_state_(MissionState::INIT),
+      pose_received_(false), mission_start_signal_received_(false),
+      goal_active_(false), goal_request_pending_(false),
+      lanterns_found_count_(0), takeoff_altitude_(2.0), z_retry_index_(0),
+      goal_set_time_(this->now()), min_exploration_goal_distance_(2.0),
+      consecutive_too_close_rejections_(0),
+      last_successful_exploration_goal_time_(this->now()) {
   // Initialize positions
   start_position_.x = 0.0;
   start_position_.y = 0.0;
   start_position_.z = 0.0;
   
+  // Initialize goal tracking
+  last_pose_at_goal_set_.x = 0.0;
+  last_pose_at_goal_set_.y = 0.0;
+  last_pose_at_goal_set_.z = 0.0;
+  
+  // Declare and read parameters
+  this->declare_parameter("min_exploration_goal_distance", min_exploration_goal_distance_);
+  min_exploration_goal_distance_ = this->get_parameter("min_exploration_goal_distance").as_double();
+  this->declare_parameter("explore_goal_selection_timeout", explore_goal_selection_timeout_);
+  explore_goal_selection_timeout_ =
+      this->get_parameter("explore_goal_selection_timeout").as_double();
+  this->declare_parameter("explore_goal_selection_max_failures", explore_goal_selection_max_failures_);
+  explore_goal_selection_max_failures_ =
+      this->get_parameter("explore_goal_selection_max_failures").as_int();
+
   // Cave entrance - Main entrance
   cave_entrance_.x = -320.0;
   cave_entrance_.y = 10.0;
   cave_entrance_.z = 18.0;
 
   // Z-retry altitudes: start with default, then try lower, then higher
-  z_retry_altitudes_ = {1.5, 1.0, 2.0, 0.75, 2.5};
-
+  // z_retry_altitudes_ is now built dynamically per goal in request_exploration_goal()
   // --- Subscribers ---
   odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
-    "/current_state_est", 10,
-    std::bind(&MissionFsmNode::odometry_callback, this, std::placeholders::_1));
+      "/current_state_est", 10,
+      std::bind(&MissionFsmNode::odometry_callback, this,
+                std::placeholders::_1));
 
   lantern_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
-    "/detected_lanterns", 10,
-    std::bind(&MissionFsmNode::lantern_callback, this, std::placeholders::_1));
+      "/detected_lanterns", 10,
+      std::bind(&MissionFsmNode::lantern_callback, this,
+                std::placeholders::_1));
 
   planner_status_sub_ = this->create_subscription<std_msgs::msg::String>(
-    "/planner/status", 10,
-    std::bind(&MissionFsmNode::planner_status_callback, this, std::placeholders::_1));
-
-  exploration_goal_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
-    "/exploration/goal", 10,
-    std::bind(&MissionFsmNode::exploration_goal_callback, this, std::placeholders::_1));
+      "/planner/status", 10,
+      std::bind(&MissionFsmNode::planner_status_callback, this,
+                std::placeholders::_1));
 
   start_mission_sub_ = this->create_subscription<std_msgs::msg::Empty>(
-    "/mission/start", 10,
-    std::bind(&MissionFsmNode::start_mission_callback, this, std::placeholders::_1));
+      "/mission/start", 10,
+      std::bind(&MissionFsmNode::start_mission_callback, this,
+                std::placeholders::_1));
+
+  exploration_map_ready_sub_ = this->create_subscription<std_msgs::msg::Bool>(
+      "/exploration/map_ready", 10,
+      [this](const std_msgs::msg::Bool::SharedPtr msg) {
+        exploration_map_ready_ = msg->data;
+        RCLCPP_INFO(this->get_logger(), "Exploration map_ready flag set to: %s",
+                    exploration_map_ready_ ? "true" : "false");
+      });
+
+  // --- Service Clients ---
+  exploration_goal_client_ =
+      this->create_client<exploring::srv::GetExplorationGoal>(
+          "/exploration/get_goal");
 
   // --- Publishers ---
-  trajectory_pub_ = this->create_publisher<trajectory_msgs::msg::MultiDOFJointTrajectory>(
-    "/command/trajectory", 10);
+  trajectory_pub_ =
+      this->create_publisher<trajectory_msgs::msg::MultiDOFJointTrajectory>(
+          "/command/trajectory", 10);
 
   waypoint_path_pub_ = this->create_publisher<nav_msgs::msg::Path>(
-    "waypoints", rclcpp::QoS(1).transient_local().reliable());
+      "waypoints", rclcpp::QoS(1).transient_local().reliable());
 
-  cancel_pub_ = this->create_publisher<std_msgs::msg::Empty>(
-    "/fsm/cancel", 10);
+  cancel_pub_ = this->create_publisher<std_msgs::msg::Empty>("/fsm/cancel", 10);
 
-  state_pub_ = this->create_publisher<std_msgs::msg::String>(
-    "/fsm/state", 10);
+  state_pub_ = this->create_publisher<std_msgs::msg::String>("/fsm/state", 10);
 
   planner_goal_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(
-    "/planner/goal", 10);
+      "/planner/goal", 10);
 
   drone_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>(
-    "/fsm/drone_marker", 10);
+      "/fsm/drone_marker", 10);
+
+  enable_mapping_pub_ = this->create_publisher<std_msgs::msg::Bool>(
+      "/enable_mapping", rclcpp::QoS(1).transient_local().reliable());
+
+  blacklist_goal_pub_ = this->create_publisher<geometry_msgs::msg::PointStamped>(
+      "/exploration/blacklist_goal", 10);
 
   // --- Timer: 10 Hz main loop ---
-  timer_ = this->create_wall_timer(
-    std::chrono::milliseconds(100),
-    std::bind(&MissionFsmNode::timer_callback, this));
+  timer_ =
+      this->create_wall_timer(std::chrono::milliseconds(100),
+                              std::bind(&MissionFsmNode::timer_callback, this));
+
+  // --- TF Listener ---
+  tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
+  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
   RCLCPP_INFO(this->get_logger(), "Mission FSM Node initialized. State: INIT");
   publish_state();
 }
 
-void MissionFsmNode::odometry_callback(const nav_msgs::msg::Odometry::SharedPtr msg)
-{
+void MissionFsmNode::odometry_callback(
+    const nav_msgs::msg::Odometry::SharedPtr msg) {
   current_pose_ = msg->pose.pose;
-  
+
   if (!pose_received_) {
     pose_received_ = true;
     // Store initial position as start position
@@ -90,17 +123,37 @@ void MissionFsmNode::odometry_callback(const nav_msgs::msg::Odometry::SharedPtr 
   }
 }
 
-void MissionFsmNode::lantern_callback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
-{
+void MissionFsmNode::lantern_callback(
+    const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
   // Only process lanterns during EXPLORE state
   if (current_state_ != MissionState::EXPLORE) {
     return;
   }
 
   // De-duplication: Is this a new lantern?
+  // MUST transform to world frame first, because the detection might be in a
+  // local frame (e.g. camera) that moves with the drone.
+  geometry_msgs::msg::PoseStamped lantern_world;
+  try {
+    lantern_world = tf_buffer_->transform(*msg, "world", tf2::durationFromSec(1.0));
+  } catch (tf2::TransformException &ex) {
+    RCLCPP_WARN(this->get_logger(), "Could not transform lantern to world: %s",
+                ex.what());
+    return;
+  }
+
   bool is_new = true;
-  for (const auto& existing_pose : detected_lantern_poses_) {
-    double dist = calculate_distance(msg->pose.position, existing_pose.position);
+  for (const auto &existing_pose : detected_lantern_poses_) {
+    double dist =
+        calculate_distance(lantern_world.pose.position, existing_pose.position);
+    
+    // Debug logging for distance check
+    RCLCPP_INFO(this->get_logger(), 
+                "Checking lantern candidate [%.2f, %.2f, %.2f] against existing [%.2f, %.2f, %.2f]: dist=%.2f",
+                lantern_world.pose.position.x, lantern_world.pose.position.y, lantern_world.pose.position.z,
+                existing_pose.position.x, existing_pose.position.y, existing_pose.position.z,
+                dist);
+
     if (dist < LANTERN_DEDUP_THRESHOLD) {
       is_new = false;
       break;
@@ -108,12 +161,12 @@ void MissionFsmNode::lantern_callback(const geometry_msgs::msg::PoseStamped::Sha
   }
 
   if (is_new) {
-    RCLCPP_INFO(this->get_logger(), 
+    RCLCPP_INFO(this->get_logger(),
                 "New lantern detected at [%.2f, %.2f, %.2f]! Total found: %zu",
-                msg->pose.position.x, msg->pose.position.y, msg->pose.position.z,
-                lanterns_found_count_ + 1);
-    
-    detected_lantern_poses_.push_back(msg->pose);
+                lantern_world.pose.position.x, lantern_world.pose.position.y,
+                lantern_world.pose.position.z, lanterns_found_count_ + 1);
+
+    detected_lantern_poses_.push_back(lantern_world.pose);
     lanterns_found_count_++;
 
     // Interrupt current movement
@@ -125,86 +178,131 @@ void MissionFsmNode::lantern_callback(const geometry_msgs::msg::PoseStamped::Sha
   }
 }
 
-void MissionFsmNode::timer_callback()
-{
+void MissionFsmNode::timer_callback() {
   update_state();
   publish_state();
   publish_drone_marker();
 }
 
-void MissionFsmNode::planner_status_callback(const std_msgs::msg::String::SharedPtr msg)
-{
+void MissionFsmNode::planner_status_callback(
+    const std_msgs::msg::String::SharedPtr msg) {
   if (msg->data == "GOAL_REACHED") {
     RCLCPP_INFO(this->get_logger(), "Planner: Goal reached!");
     goal_active_ = false;
     // State machine will handle transition in update_state()
-  }
-  else if (msg->data == "PLAN_FAILED") {
-    RCLCPP_WARN(this->get_logger(), "Planner: Planning failed for current goal.");
+  } else if (msg->data == "PLAN_FAILED") {
+    RCLCPP_WARN(this->get_logger(),
+                "Planner: Planning failed for current goal.");
     goal_active_ = false;
-    
+
     // If we're exploring, trigger the Z-retry recovery
-    if (current_state_ == MissionState::EXPLORE || 
+    if (current_state_ == MissionState::EXPLORE ||
         current_state_ == MissionState::REFINE_GOAL) {
       transition_to(MissionState::REFINE_GOAL);
     }
   }
 }
 
-void MissionFsmNode::exploration_goal_callback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
-{
+void MissionFsmNode::exploration_goal_callback(
+    const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
   // Only accept new exploration goals when in EXPLORE state and not busy
   if (current_state_ != MissionState::EXPLORE) {
-    RCLCPP_DEBUG(this->get_logger(), "Ignoring exploration goal - not in EXPLORE state.");
+    RCLCPP_DEBUG(this->get_logger(),
+                 "Ignoring exploration goal - not in EXPLORE state.");
     return;
   }
 
   if (goal_active_) {
-    RCLCPP_DEBUG(this->get_logger(), "Ignoring exploration goal - already have an active goal.");
-    return;
-  }
-
-  // Check if this goal is blacklisted
-  if (is_goal_blacklisted(msg->pose.position)) {
-    RCLCPP_WARN(this->get_logger(), 
-                "Received blacklisted goal [%.2f, %.2f]. Requesting new goal.",
-                msg->pose.position.x, msg->pose.position.y);
+    RCLCPP_DEBUG(this->get_logger(),
+                 "Ignoring exploration goal - already have an active goal.");
     return;
   }
 
   // Store the strategic (x,y) goal
   strategic_goal_.x = msg->pose.position.x;
   strategic_goal_.y = msg->pose.position.y;
-  strategic_goal_.z = msg->pose.position.z;  // Initial Z from exploration manager
+  strategic_goal_.z =
+      msg->pose.position.z; // Initial Z from exploration manager
 
-  RCLCPP_INFO(this->get_logger(), 
+  RCLCPP_INFO(this->get_logger(),
               "New exploration goal received: [%.2f, %.2f, %.2f]",
               strategic_goal_.x, strategic_goal_.y, strategic_goal_.z);
 
   // Reset Z-retry index and start with the first altitude
   z_retry_index_ = 0;
 
-  // Publish goal to planner with first Z from retry list
+  // Use first Z from retry list (override 2D map's Z=0) and send goal to the
+  // planner node, which will generate a collision-free path for the trajectory
+  // generator.
   double altitude = z_retry_altitudes_[z_retry_index_];
-  geometry_msgs::msg::PoseStamped goal_msg;
-  goal_msg.header.stamp = this->now();
-  goal_msg.header.frame_id = "world";
-  goal_msg.pose.position.x = strategic_goal_.x;
-  goal_msg.pose.position.y = strategic_goal_.y;
-  goal_msg.pose.position.z = altitude;
-  goal_msg.pose.orientation.w = 1.0;
-
-  planner_goal_pub_->publish(goal_msg);
-  goal_active_ = true;
   z_retry_index_++;
 
-  RCLCPP_INFO(this->get_logger(), 
-              "Sent goal to planner: [%.2f, %.2f, %.2f]",
-              goal_msg.pose.position.x, goal_msg.pose.position.y, goal_msg.pose.position.z);
+  geometry_msgs::msg::PoseStamped planner_goal;
+  planner_goal.header.stamp = this->now();
+  planner_goal.header.frame_id = "world";
+  planner_goal.pose.position.x = strategic_goal_.x;
+  planner_goal.pose.position.y = strategic_goal_.y;
+  planner_goal.pose.position.z = altitude;
+  planner_goal.pose.orientation.w = 1.0;
+
+  // Check minimum distance - reject goals that are too close
+  double goal_dist = std::sqrt(
+      (planner_goal.pose.position.x - current_pose_.position.x) *
+      (planner_goal.pose.position.x - current_pose_.position.x) +
+      (planner_goal.pose.position.y - current_pose_.position.y) *
+      (planner_goal.pose.position.y - current_pose_.position.y));
+  
+  if (goal_dist < min_exploration_goal_distance_) {
+    ++consecutive_too_close_rejections_;
+    
+    // If we've rejected 3 consecutive goals for being too close, accept this one anyway
+    // to prevent infinite loop
+    if (consecutive_too_close_rejections_ >= MAX_CONSECUTIVE_TOO_CLOSE_REJECTIONS) {
+      RCLCPP_WARN(this->get_logger(),
+                  "Exploration goal too close (%.2f m < %.2f m), but accepting anyway "
+                  "after %d consecutive rejections to avoid getting stuck.",
+                  goal_dist, min_exploration_goal_distance_,
+                  consecutive_too_close_rejections_);
+      consecutive_too_close_rejections_ = 0;  // Reset counter
+      // Continue to accept the goal below
+    } else {
+      RCLCPP_WARN(this->get_logger(),
+                  "Exploration goal too close (%.2f m < %.2f m). "
+                  "Rejecting (consecutive rejections: %d/%d). Requesting new goal.",
+                  goal_dist, min_exploration_goal_distance_,
+                  consecutive_too_close_rejections_,
+                  MAX_CONSECUTIVE_TOO_CLOSE_REJECTIONS);
+      // Request a new goal immediately
+      request_exploration_goal();
+      return;
+    }
+  } else {
+    // Goal is far enough - reset rejection counter
+    consecutive_too_close_rejections_ = 0;
+  }
+
+  // Track the active exploration goal so distance checks in EXPLORE use
+  // the correct target instead of a stale one (e.g. cave entrance).
+  current_goal_.x = planner_goal.pose.position.x;
+  current_goal_.y = planner_goal.pose.position.y;
+  current_goal_.z = planner_goal.pose.position.z;
+  
+  // Track when goal was set and drone position for timeout/movement detection
+  goal_set_time_ = this->now();
+  last_pose_at_goal_set_ = current_pose_.position;
+
+  planner_goal_pub_->publish(planner_goal);
+  goal_active_ = true;
+
+  RCLCPP_INFO(this->get_logger(),
+              "Sent exploration goal to planner: [%.2f, %.2f, %.2f] "
+              "(distance=%.2f m)",
+              planner_goal.pose.position.x, planner_goal.pose.position.y,
+              planner_goal.pose.position.z, goal_dist);
 }
 
-void MissionFsmNode::start_mission_callback(const std_msgs::msg::Empty::SharedPtr msg)
-{
+void MissionFsmNode::start_mission_callback(
+    const std_msgs::msg::Empty::SharedPtr msg) {
   (void)msg;
   if (!mission_start_signal_received_) {
     mission_start_signal_received_ = true;
@@ -212,9 +310,7 @@ void MissionFsmNode::start_mission_callback(const std_msgs::msg::Empty::SharedPt
   }
 }
 
-
-void MissionFsmNode::transition_to(MissionState new_state)
-{
+void MissionFsmNode::transition_to(MissionState new_state) {
   if (new_state == current_state_) {
     return;
   }
@@ -229,217 +325,386 @@ void MissionFsmNode::transition_to(MissionState new_state)
   publish_state();
 }
 
-void MissionFsmNode::on_state_enter(MissionState state)
-{
+void MissionFsmNode::on_state_enter(MissionState state) {
   switch (state) {
-    case MissionState::TAKEOFF:
-      RCLCPP_INFO(this->get_logger(), "Taking off to altitude: %.2f m", takeoff_altitude_);
-      
-      // Use current_state_est for takeoff position
-      {
-        double target_x = current_pose_.position.x;
-        double target_y = current_pose_.position.y;
-        double target_z = current_pose_.position.z + 5.0; // Ascend 5m relative to start
+  case MissionState::TAKEOFF:
+    RCLCPP_INFO(this->get_logger(), "Taking off to altitude: %.2f m",
+                takeoff_altitude_);
 
-        RCLCPP_INFO(this->get_logger(), "Takeoff Target (current_state_est): [%.2f, %.2f, %.2f]", target_x, target_y, target_z);
+    // Use current_state_est for takeoff position
+    {
+      double target_x = current_pose_.position.x;
+      double target_y = current_pose_.position.y;
+      double target_z =
+          current_pose_.position.z + 5.0; // Ascend 5m relative to start
 
-        geometry_msgs::msg::Point target;
-        target.x = target_x;
-        target.y = target_y;
-        target.z = target_z;
-        publish_waypoint_path({target});
-      }
-      goal_active_ = true;
-      break;
+      RCLCPP_INFO(this->get_logger(),
+                  "Takeoff Target (current_state_est): [%.2f, %.2f, %.2f]",
+                  target_x, target_y, target_z);
 
-    case MissionState::GOTO_ENTRANCE:
-      RCLCPP_INFO(this->get_logger(), "Navigating to cave entrance: [%.2f, %.2f, %.2f]",
-                  cave_entrance_.x, cave_entrance_.y, cave_entrance_.z);
-      publish_waypoint_path({cave_entrance_});
-      goal_active_ = true;
-      break;
+      geometry_msgs::msg::Point target;
+      target.x = target_x;
+      target.y = target_y;
+      target.z = target_z;
+      publish_waypoint_path({target});
+    }
+    goal_active_ = true;
+    break;
 
-    case MissionState::EXPLORE:
-      RCLCPP_INFO(this->get_logger(), "Entering exploration mode. Lanterns found: %zu/%zu",
+  case MissionState::GOTO_ENTRANCE:
+    RCLCPP_INFO(this->get_logger(),
+                "Navigating to cave entrance: [%.2f, %.2f, %.2f]",
+                cave_entrance_.x, cave_entrance_.y, cave_entrance_.z);
+    publish_waypoint_path({cave_entrance_});
+    goal_active_ = true;
+    break;
+
+  case MissionState::EXPLORE:
+    {
+      RCLCPP_INFO(this->get_logger(),
+                  "Entering exploration mode. Lanterns found: %zu/%zu",
                   lanterns_found_count_, TARGET_LANTERN_COUNT);
+      // Enable mapping (cloud gate will start forwarding point clouds)
+      auto enable_msg = std_msgs::msg::Bool();
+      enable_msg.data = true;
+      enable_mapping_pub_->publish(enable_msg);
       // Reset Z-retry for new exploration goal
       z_retry_index_ = 0;
       goal_active_ = false;
-      break;
+      goal_request_pending_ = false;
+      // Reset goal-selection tracking when (re)entering exploration
+      consecutive_goal_request_failures_ = 0;
+      last_successful_exploration_goal_time_ = this->now();
+      // Main loop (update_state) will request the goal automatically
+    }
+    break;
 
-    case MissionState::REFINE_GOAL:
-      RCLCPP_INFO(this->get_logger(), "Entering goal refinement (Z-retry) mode.");
-      // Z-retry logic handled in update_state()
-      break;
+  case MissionState::REFINE_GOAL:
+    RCLCPP_INFO(this->get_logger(), "Entering goal refinement (Z-retry) mode.");
+    // Z-retry logic handled in update_state()
+    break;
 
-    case MissionState::LANTERN_FOUND:
-      RCLCPP_INFO(this->get_logger(), "Lantern logged! Pausing briefly...");
-      // Brief pause handled by state logic
-      break;
+  case MissionState::LANTERN_FOUND:
+    RCLCPP_INFO(this->get_logger(), "Lantern logged! Pausing briefly...");
+    // Brief pause handled by state logic
+    break;
 
-    case MissionState::RETURN:
-      RCLCPP_INFO(this->get_logger(), "Returning to start position: [%.2f, %.2f, %.2f]",
-                  start_position_.x, start_position_.y, takeoff_altitude_);
-      publish_trajectory_goal(start_position_.x, start_position_.y, takeoff_altitude_);
-      goal_active_ = true;
-      break;
+  case MissionState::RETURN:
+    RCLCPP_INFO(this->get_logger(),
+                "Returning to start position: [%.2f, %.2f, %.2f] using PLANNER",
+                start_position_.x, start_position_.y, takeoff_altitude_);
+    
+    // Use the planner to find a safe path back, instead of blind trajectory
+    {
+        geometry_msgs::msg::PoseStamped return_goal_msg;
+        return_goal_msg.header.stamp = this->now();
+        return_goal_msg.header.frame_id = "world";
+        return_goal_msg.pose.position.x = start_position_.x;
+        return_goal_msg.pose.position.y = start_position_.y;
+        return_goal_msg.pose.position.z = takeoff_altitude_; // Maintain altitude for return
+        return_goal_msg.pose.orientation.w = 1.0;
+        
+        planner_goal_pub_->publish(return_goal_msg);
+        
+        current_goal_.x = start_position_.x;
+        current_goal_.y = start_position_.y;
+        current_goal_.z = takeoff_altitude_;
+        goal_set_time_ = this->now();
+        last_pose_at_goal_set_ = current_pose_.position;
+        goal_active_ = true;
+    }
+    break;
 
-    case MissionState::LAND:
-      RCLCPP_INFO(this->get_logger(), "Landing...");
-      publish_trajectory_goal(
-        current_pose_.position.x,
-        current_pose_.position.y,
-        0.0);
-      goal_active_ = true;
-      break;
+  case MissionState::LAND:
+    RCLCPP_INFO(this->get_logger(), "Landing...");
+    publish_trajectory_goal(current_pose_.position.x, current_pose_.position.y,
+                            0.0);
+    goal_active_ = true;
+    break;
 
-    default:
-      break;
+  default:
+    break;
   }
 }
 
-void MissionFsmNode::on_state_exit(MissionState state)
-{
-  (void)state;  // Currently no exit actions needed
+void MissionFsmNode::on_state_exit(MissionState state) {
+  (void)state; // Currently no exit actions needed
 }
 
-void MissionFsmNode::update_state()
-{
+void MissionFsmNode::update_state() {
   switch (current_state_) {
-    case MissionState::INIT:
-      // Wait for pose data and start signal
-      if (pose_received_ && mission_start_signal_received_) {
-        transition_to(MissionState::TAKEOFF);
+  case MissionState::INIT:
+    // Wait for pose data and start signal
+    if (pose_received_ && mission_start_signal_received_) {
+      transition_to(MissionState::TAKEOFF);
+    } else {
+      // Logging for user feedback
+      if (!pose_received_) {
+        RCLCPP_INFO_THROTTLE(
+            this->get_logger(), *this->get_clock(), 2000,
+            "Waiting for initial pose from /current_state_est...");
+      } else if (!mission_start_signal_received_) {
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                             "Waiting for start signal (publish empty message "
+                             "to /mission/start)...");
+      }
+    }
+    break;
+
+  case MissionState::TAKEOFF:
+    // Check if takeoff altitude reached
+    if (goal_active_) {
+      double alt_diff = std::abs(current_pose_.position.z - current_goal_.z);
+      if (alt_diff < GOAL_REACHED_THRESHOLD) {
+        RCLCPP_INFO(this->get_logger(), "Takeoff complete. Altitude: %.2f m",
+                    current_pose_.position.z);
+        goal_active_ = false;
+        transition_to(MissionState::GOTO_ENTRANCE);
+      }
+    }
+    break;
+
+  case MissionState::GOTO_ENTRANCE:
+    // Check if reached cave entrance
+    if (goal_active_) {
+      double dist = calculate_distance(current_pose_.position, cave_entrance_);
+      if (dist < GOAL_REACHED_THRESHOLD) {
+        RCLCPP_INFO(this->get_logger(), "Reached cave entrance!");
+        goal_active_ = false;
+        transition_to(MissionState::EXPLORE);
+      }
+    }
+    break;
+
+  case MissionState::EXPLORE:
+    // Check if we've found all lanterns
+    if (lanterns_found_count_ >= TARGET_LANTERN_COUNT) {
+      RCLCPP_INFO(this->get_logger(),
+                  "All %zu lanterns found! Mission complete.",
+                  TARGET_LANTERN_COUNT);
+      transition_to(MissionState::RETURN);
+      break;
+    }
+
+    // Check if we've reached the current exploration goal
+    if (goal_active_) {
+      double dist = calculate_distance(current_pose_.position, current_goal_);
+      double time_since_goal_set = (this->now() - goal_set_time_).seconds();
+      
+      // FIRST: Check if goal reached (most important check - do this first!)
+      if (dist < GOAL_REACHED_THRESHOLD) {
+        RCLCPP_INFO(this->get_logger(),
+                    "Reached exploration goal [%.2f, %.2f, %.2f] "
+                    "(distance=%.2f m, took %.1f s). Requesting next goal.",
+                    current_goal_.x, current_goal_.y, current_goal_.z,
+                    dist, time_since_goal_set);
+        goal_active_ = false;
+        consecutive_too_close_rejections_ = 0;  // Reset counter on successful goal completion
+        // Loop will trigger new request in next block
+      }
+      // SECOND: Check for goal timeout - if goal takes too long, abandon it
+      else if (time_since_goal_set > GOAL_TIMEOUT_SECONDS) {
+        RCLCPP_WARN(this->get_logger(),
+                    "Exploration goal timeout (%.1f s > %.1f s). "
+                    "Abandoning goal [%.2f, %.2f, %.2f] "
+                    "(current distance=%.2f m, threshold=%.2f m). Requesting new one.",
+                    time_since_goal_set, GOAL_TIMEOUT_SECONDS,
+                    current_goal_.x, current_goal_.y, current_goal_.z,
+                    dist, GOAL_REACHED_THRESHOLD);
+        goal_active_ = false;
+        // Will trigger new request in next block
+      }
+      // THIRD: Check if drone is stuck (not making progress toward goal)
+      else if (time_since_goal_set > 10.0) {  // After 10 seconds, check movement
+        double movement_since_goal = calculate_distance(
+            current_pose_.position, last_pose_at_goal_set_);
+        double progress_toward_goal = calculate_distance(
+            last_pose_at_goal_set_, current_goal_) -
+            dist;  // How much closer we got
+        
+        if (movement_since_goal < MIN_MOVEMENT_THRESHOLD) {
+          RCLCPP_WARN(this->get_logger(),
+                      "Drone appears stuck (moved only %.2f m in %.1f s, "
+                      "distance to goal=%.2f m). "
+                      "Abandoning goal [%.2f, %.2f, %.2f] and requesting new one.",
+                      movement_since_goal, time_since_goal_set, dist,
+                      current_goal_.x, current_goal_.y, current_goal_.z);
+          goal_active_ = false;
+          // Will trigger new request in next block
+        } else if (progress_toward_goal < 0.5 && dist > GOAL_REACHED_THRESHOLD * 2.0) {
+          // Making movement but not toward goal (might be going around obstacle)
+          // Only warn if we're still far from goal
+          RCLCPP_DEBUG(this->get_logger(),
+                       "Drone moving (%.2f m) but slow progress toward goal "
+                       "(%.2f m closer, %.2f m remaining).",
+                       movement_since_goal, progress_toward_goal, dist);
+        }
+      }
+    }
+
+    // Detect goal-selection stuck conditions (no active goal and repeated failures)
+    if (!goal_active_) {
+      const double time_since_last_success =
+          (this->now() - last_successful_exploration_goal_time_).seconds();
+      if ((explore_goal_selection_timeout_ > 0.0 &&
+           time_since_last_success > explore_goal_selection_timeout_) ||
+          (explore_goal_selection_max_failures_ > 0 &&
+           consecutive_goal_request_failures_ >= explore_goal_selection_max_failures_)) {
+        RCLCPP_WARN_THROTTLE(
+            this->get_logger(), *this->get_clock(), 5000,
+            "Exploration goal selection appears stuck "
+            "(failures=%d, last success=%.1f s ago). "
+            "Continuing to request new goals with current parameters.",
+            consecutive_goal_request_failures_, time_since_last_success);
+      }
+    }
+
+    // If no active goal and no pending request -> request one, but only once
+    // the exploration map is reported as ready by the exploration_manager.
+    // This avoids spamming goal requests while the voxel map is still empty.
+    if (!goal_active_ && !goal_request_pending_) {
+      if (exploration_map_ready_) {
+        request_exploration_goal();
       } else {
-        // Logging for user feedback
-        if (!pose_received_) {
-            RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000, 
-                                 "Waiting for initial pose from /current_state_est...");
-        } else if (!mission_start_signal_received_) {
-            RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000, 
-                                 "Waiting for start signal (publish empty message to /mission/start)...");
-        }
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                             "Waiting for exploration map to be ready before "
+                             "requesting goals...");
       }
-      break;
+    }
+    break;
 
-    case MissionState::TAKEOFF:
-      // Check if takeoff altitude reached
-      if (goal_active_) {
-        double alt_diff = std::abs(current_pose_.position.z - current_goal_.z);
-        if (alt_diff < GOAL_REACHED_THRESHOLD) {
-          RCLCPP_INFO(this->get_logger(), "Takeoff complete. Altitude: %.2f m", 
-                      current_pose_.position.z);
-          goal_active_ = false;
-          transition_to(MissionState::GOTO_ENTRANCE);
-        }
+  case MissionState::LANTERN_FOUND:
+    // Brief pause, then return to exploration
+    // In a real implementation, add a timer for the pause duration
+    transition_to(MissionState::EXPLORE);
+    break;
+
+  case MissionState::REFINE_GOAL:
+    // Z-Retry Loop: Try different altitudes for the same (x,y) goal
+    if (!goal_active_) {
+      if (z_retry_index_ < z_retry_altitudes_.size()) {
+        double altitude = z_retry_altitudes_[z_retry_index_];
+        RCLCPP_INFO(this->get_logger(),
+                    "Z-Retry: Attempting altitude %.2f m (attempt %zu/%zu) for "
+                    "goal [%.2f, %.2f]",
+                    altitude, z_retry_index_ + 1, z_retry_altitudes_.size(),
+                    strategic_goal_.x, strategic_goal_.y);
+
+        // Publish goal to planner
+        geometry_msgs::msg::PoseStamped goal_msg;
+        goal_msg.header.stamp = this->now();
+        goal_msg.header.frame_id = "world";
+        goal_msg.pose.position.x = strategic_goal_.x;
+        goal_msg.pose.position.y = strategic_goal_.y;
+        goal_msg.pose.position.z = altitude;
+        goal_msg.pose.orientation.w = 1.0;
+
+        // Update tracking variables for the new Z-retry goal
+        current_goal_.x = goal_msg.pose.position.x;
+        current_goal_.y = goal_msg.pose.position.y;
+        current_goal_.z = goal_msg.pose.position.z;
+        goal_set_time_ = this->now();
+        last_pose_at_goal_set_ = current_pose_.position;
+
+        planner_goal_pub_->publish(goal_msg);
+        goal_active_ = true;
+        z_retry_index_++;
+      } else {
+        // All Z retries exhausted - blacklist this goal
+        RCLCPP_WARN(this->get_logger(),
+                    "All Z retries failed for goal [%.2f, %.2f]. Blacklisting.",
+                    strategic_goal_.x, strategic_goal_.y);
+        // Publish to ExplorationManager so it doesn't suggest this again
+        geometry_msgs::msg::PointStamped blacklist_msg;
+        blacklist_msg.header.stamp = this->now();
+        blacklist_msg.header.frame_id = "world";
+        blacklist_msg.point = strategic_goal_;
+        blacklist_goal_pub_->publish(blacklist_msg);
+
+        // Reset and return to exploration for a new goal
+        z_retry_index_ = 0;
+        goal_active_ = false;
+        transition_to(MissionState::EXPLORE);
       }
-      break;
+    } else {
+      // Monitor progress during Z-retry
+      double dist = calculate_distance(current_pose_.position, current_goal_);
+      double time_since_goal_set = (this->now() - goal_set_time_).seconds();
 
-    case MissionState::GOTO_ENTRANCE:
-      // Check if reached cave entrance
-      if (goal_active_) {
-        double dist = calculate_distance(current_pose_.position, cave_entrance_);
-        if (dist < GOAL_REACHED_THRESHOLD) {
-          RCLCPP_INFO(this->get_logger(), "Reached cave entrance!");
-          goal_active_ = false;
-          transition_to(MissionState::EXPLORE);
-        }
+      // Check if reached
+      if (dist < GOAL_REACHED_THRESHOLD) {
+        RCLCPP_INFO(this->get_logger(),
+                    "Reached refined goal [%.2f, %.2f, %.2f] "
+                    "(distance=%.2f m). Resuming exploration.",
+                    current_goal_.x, current_goal_.y, current_goal_.z, dist);
+        
+        goal_active_ = false;
+        // Success! Return to EXPLORE state to request next goal
+        transition_to(MissionState::EXPLORE);
       }
-      break;
-
-    case MissionState::EXPLORE:
-      // Check if we've found all lanterns or exploration is complete
-      if (lanterns_found_count_ >= TARGET_LANTERN_COUNT) {
-        RCLCPP_INFO(this->get_logger(), "All %zu lanterns found! Mission complete.",
-                    TARGET_LANTERN_COUNT);
-        transition_to(MissionState::RETURN);
+      // Check for timeout
+      else if (time_since_goal_set > GOAL_TIMEOUT_SECONDS) {
+        RCLCPP_WARN(this->get_logger(),
+                    "Refined goal timeout (%.1f s). "
+                    "Abandoning altitude %.2f m. Trying next option.",
+                    time_since_goal_set, current_goal_.z);
+        goal_active_ = false;
+        // Next loop iteration will trigger next Z-retry
       }
-      // Otherwise, exploration_manager will provide goals via action/topic
-      break;
+    }
+    break;
 
-    case MissionState::LANTERN_FOUND:
-      // Brief pause, then return to exploration
-      // In a real implementation, add a timer for the pause duration
-      transition_to(MissionState::EXPLORE);
-      break;
-
-    case MissionState::REFINE_GOAL:
-      // Z-Retry Loop: Try different altitudes for the same (x,y) goal
-      if (!goal_active_) {
-        if (z_retry_index_ < z_retry_altitudes_.size()) {
-          double altitude = z_retry_altitudes_[z_retry_index_];
-          RCLCPP_INFO(this->get_logger(), 
-                      "Z-Retry: Attempting altitude %.2f m (attempt %zu/%zu) for goal [%.2f, %.2f]",
-                      altitude, z_retry_index_ + 1, z_retry_altitudes_.size(),
-                      strategic_goal_.x, strategic_goal_.y);
-          
-          // Publish goal to planner
-          geometry_msgs::msg::PoseStamped goal_msg;
-          goal_msg.header.stamp = this->now();
-          goal_msg.header.frame_id = "world";
-          goal_msg.pose.position.x = strategic_goal_.x;
-          goal_msg.pose.position.y = strategic_goal_.y;
-          goal_msg.pose.position.z = altitude;
-          goal_msg.pose.orientation.w = 1.0;
-          
-          planner_goal_pub_->publish(goal_msg);
-          goal_active_ = true;
-          z_retry_index_++;
-        } else {
-          // All Z retries exhausted - blacklist this goal
-          RCLCPP_WARN(this->get_logger(), 
-                      "All Z retries failed for goal [%.2f, %.2f]. Blacklisting.",
-                      strategic_goal_.x, strategic_goal_.y);
-          blacklisted_goals_.push_back(strategic_goal_);
-          
-          // Reset and return to exploration for a new goal
-          z_retry_index_ = 0;
-          goal_active_ = false;
-          transition_to(MissionState::EXPLORE);
-        }
+  case MissionState::RETURN:
+    // If goal is no longer active, it means planner either reached it or failed
+    // (handled in planner_status_callback)
+    if (!goal_active_) {
+      // Check if we are actually close to start position
+      geometry_msgs::msg::Point return_goal;
+      return_goal.x = start_position_.x;
+      return_goal.y = start_position_.y;
+      return_goal.z = takeoff_altitude_;
+      
+      double dist = calculate_distance(current_pose_.position, return_goal);
+      if (dist < 2.0) { // Slightly larger threshold for return
+        RCLCPP_INFO(this->get_logger(), "Returned to start position (dist=%.2f)! Landing.", dist);
+        transition_to(MissionState::LAND);
+      } else {
+         RCLCPP_WARN(this->get_logger(), "Planner finished but drone is %.2f m from start. Landing anyway (emergency).", dist);
+         transition_to(MissionState::LAND);
       }
-      break;
+    }
+    // Also monitor timeout for return
+    else if ((this->now() - goal_set_time_).seconds() > 120.0) { // 2 minutes max for return
+        RCLCPP_WARN(this->get_logger(), "Return home timed out!");
+        goal_active_ = false; 
+        transition_to(MissionState::LAND); // Land where we are? Or try again? Landing is safer.
+    }
+    break;
 
-    case MissionState::RETURN:
-      // Check if returned to start
-      if (goal_active_) {
-        geometry_msgs::msg::Point return_goal;
-        return_goal.x = start_position_.x;
-        return_goal.y = start_position_.y;
-        return_goal.z = takeoff_altitude_;
-        double dist = calculate_distance(current_pose_.position, return_goal);
-        if (dist < GOAL_REACHED_THRESHOLD) {
-          RCLCPP_INFO(this->get_logger(), "Returned to start position!");
-          goal_active_ = false;
-          transition_to(MissionState::LAND);
-        }
+  case MissionState::LAND:
+    // Check if landed
+    if (goal_active_) {
+      if (current_pose_.position.z < 0.2) {
+        RCLCPP_INFO(this->get_logger(), "Landed! Mission complete.");
+        goal_active_ = false;
+        // Could transition to a COMPLETE state or just stay in LAND
       }
-      break;
-
-    case MissionState::LAND:
-      // Check if landed
-      if (goal_active_) {
-        if (current_pose_.position.z < 0.2) {
-          RCLCPP_INFO(this->get_logger(), "Landed! Mission complete.");
-          goal_active_ = false;
-          // Could transition to a COMPLETE state or just stay in LAND
-        }
-      }
-      break;
+    }
+    break;
   }
 }
 
-double MissionFsmNode::calculate_distance(const geometry_msgs::msg::Point& p1,
-                                          const geometry_msgs::msg::Point& p2) const
-{
+double
+MissionFsmNode::calculate_distance(const geometry_msgs::msg::Point &p1,
+                                   const geometry_msgs::msg::Point &p2) const {
   double dx = p1.x - p2.x;
   double dy = p1.y - p2.y;
   double dz = p1.z - p2.z;
   return std::sqrt(dx * dx + dy * dy + dz * dz);
 }
 
-void MissionFsmNode::publish_trajectory_goal(double x, double y, double z, double yaw)
-{
+void MissionFsmNode::publish_trajectory_goal(double x, double y, double z,
+                                             double yaw) {
   trajectory_msgs::msg::MultiDOFJointTrajectory trajectory_msg;
   trajectory_msg.header.stamp = this->now();
   trajectory_msg.header.frame_id = "world";
@@ -469,19 +734,20 @@ void MissionFsmNode::publish_trajectory_goal(double x, double y, double z, doubl
   trajectory_msg.points.push_back(point);
 
   trajectory_pub_->publish(trajectory_msg);
-  
+
   current_goal_.x = x;
   current_goal_.y = y;
   current_goal_.z = z;
 
-  RCLCPP_DEBUG(this->get_logger(), "Published trajectory goal: [%.2f, %.2f, %.2f]", x, y, z);
+  RCLCPP_DEBUG(this->get_logger(),
+               "Published trajectory goal: [%.2f, %.2f, %.2f]", x, y, z);
 }
 
 void MissionFsmNode::publish_waypoint_path(
-  const std::vector<geometry_msgs::msg::Point>& waypoints)
-{
+    const std::vector<geometry_msgs::msg::Point> &waypoints) {
   if (waypoints.empty()) {
-    RCLCPP_WARN(this->get_logger(), "Requested to publish empty waypoint path.");
+    RCLCPP_WARN(this->get_logger(),
+                "Requested to publish empty waypoint path.");
     return;
   }
 
@@ -490,7 +756,7 @@ void MissionFsmNode::publish_waypoint_path(
   path_msg.header.frame_id = "world";
   path_msg.poses.reserve(waypoints.size());
 
-  for (const auto& waypoint : waypoints) {
+  for (const auto &waypoint : waypoints) {
     geometry_msgs::msg::PoseStamped pose;
     pose.header = path_msg.header;
     pose.pose.position = waypoint;
@@ -503,19 +769,18 @@ void MissionFsmNode::publish_waypoint_path(
   current_goal_ = waypoints.back();
 
   RCLCPP_INFO(
-    this->get_logger(), "Published waypoint path with %zu poses. Goal: [%.2f, %.2f, %.2f]",
-    waypoints.size(), current_goal_.x, current_goal_.y, current_goal_.z);
+      this->get_logger(),
+      "Published waypoint path with %zu poses. Goal: [%.2f, %.2f, %.2f]",
+      waypoints.size(), current_goal_.x, current_goal_.y, current_goal_.z);
 }
 
-void MissionFsmNode::publish_state()
-{
+void MissionFsmNode::publish_state() {
   std_msgs::msg::String state_msg;
   state_msg.data = state_to_string(current_state_);
   state_pub_->publish(state_msg);
 }
 
-void MissionFsmNode::publish_drone_marker()
-{
+void MissionFsmNode::publish_drone_marker() {
   if (!pose_received_) {
     return;
   }
@@ -542,23 +807,143 @@ void MissionFsmNode::publish_drone_marker()
   marker.color.b = 0.0;
   marker.color.a = 1.0;
 
-  marker.lifetime = rclcpp::Duration::from_seconds(0);  // Persistent until updated
+  marker.lifetime =
+      rclcpp::Duration::from_seconds(0); // Persistent until updated
 
   drone_marker_pub_->publish(marker);
 }
 
-bool MissionFsmNode::is_goal_blacklisted(const geometry_msgs::msg::Point& goal) const
-{
-  for (const auto& blacklisted : blacklisted_goals_) {
-    // Only check x,y distance (ignoring z since we retry different altitudes)
-    double dx = goal.x - blacklisted.x;
-    double dy = goal.y - blacklisted.y;
-    double dist_2d = std::sqrt(dx * dx + dy * dy);
-    if (dist_2d < BLACKLIST_THRESHOLD) {
-      return true;
-    }
+void MissionFsmNode::request_exploration_goal() {
+  // Check if service is ready (non-blocking)
+  if (!exploration_goal_client_->service_is_ready()) {
+    RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *this->get_clock(), 2000,
+        "Exploration service not available yet... Retrying soon.");
+    return;
   }
-  return false;
+
+  RCLCPP_INFO(this->get_logger(),
+              "Requesting exploration goal from service...");
+
+  auto request =
+      std::make_shared<exploring::srv::GetExplorationGoal::Request>();
+
+  // Set flag to prevent duplicate requests
+  goal_request_pending_ = true;
+
+  // Async call with callback
+  exploration_goal_client_->async_send_request(
+      request,
+      [this](rclcpp::Client<exploring::srv::GetExplorationGoal>::SharedFuture
+                 future) {
+        // Clear flag when response received
+        goal_request_pending_ = false;
+
+        auto response = future.get();
+
+        if (!response->success) {
+          RCLCPP_WARN(this->get_logger(), "Exploration goal request failed: %s",
+                      response->message.c_str());
+          // Track consecutive failures so EXPLORE can detect goal-selection issues
+          ++consecutive_goal_request_failures_;
+          return;
+        }
+
+        // Check if still in EXPLORE state (might have transitioned)
+        if (current_state_ != MissionState::EXPLORE) {
+          RCLCPP_DEBUG(
+              this->get_logger(),
+              "Ignoring exploration goal - no longer in EXPLORE state.");
+          return;
+        }
+
+        // Store the strategic goal
+        strategic_goal_.x = response->goal.pose.position.x;
+        strategic_goal_.y = response->goal.pose.position.y;
+        strategic_goal_.z = response->goal.pose.position.z;
+
+        RCLCPP_INFO(this->get_logger(),
+                    "Received exploration goal: [%.2f, %.2f, %.2f]",
+                    strategic_goal_.x, strategic_goal_.y, strategic_goal_.z);
+
+        // Build Z-retry altitudes centered on the explorer's goal Z
+        double goal_z = strategic_goal_.z;
+        z_retry_altitudes_ = {goal_z, goal_z - 1.0, goal_z + 1.0, goal_z - 2.0, goal_z + 2.0};
+        z_retry_index_ = 0;
+        double altitude = z_retry_altitudes_[z_retry_index_];
+        z_retry_index_++;
+
+        // Send goal to planner node, which will compute a collision-free path
+        // for the trajectory generator.
+        geometry_msgs::msg::PoseStamped planner_goal;
+        planner_goal.header.stamp = this->now();
+        planner_goal.header.frame_id = "world";
+        planner_goal.pose.position.x = strategic_goal_.x;
+        planner_goal.pose.position.y = strategic_goal_.y;
+        planner_goal.pose.position.z = altitude;
+        planner_goal.pose.orientation.w = 1.0;
+
+        // Check minimum distance - reject goals that are too close
+        double goal_dist = std::sqrt(
+            (planner_goal.pose.position.x - current_pose_.position.x) *
+            (planner_goal.pose.position.x - current_pose_.position.x) +
+            (planner_goal.pose.position.y - current_pose_.position.y) *
+            (planner_goal.pose.position.y - current_pose_.position.y));
+        
+        if (goal_dist < min_exploration_goal_distance_) {
+          ++consecutive_too_close_rejections_;
+          
+          // If we've rejected 3 consecutive goals for being too close, accept this one anyway
+          // to prevent infinite loop
+          if (consecutive_too_close_rejections_ >= MAX_CONSECUTIVE_TOO_CLOSE_REJECTIONS) {
+            RCLCPP_WARN(this->get_logger(),
+                        "Exploration goal too close (%.2f m < %.2f m), but accepting anyway "
+                        "after %d consecutive rejections to avoid getting stuck.",
+                        goal_dist, min_exploration_goal_distance_,
+                        consecutive_too_close_rejections_);
+            consecutive_too_close_rejections_ = 0;  // Reset counter
+            // Continue to accept the goal below
+          } else {
+            RCLCPP_WARN(this->get_logger(),
+                        "Exploration goal too close (%.2f m < %.2f m). "
+                        "Rejecting (consecutive rejections: %d/%d). Requesting new goal.",
+                        goal_dist, min_exploration_goal_distance_,
+                        consecutive_too_close_rejections_,
+                        MAX_CONSECUTIVE_TOO_CLOSE_REJECTIONS);
+            // Request a new goal immediately
+            goal_request_pending_ = false;
+            request_exploration_goal();
+            return;
+          }
+        } else {
+          // Goal is far enough - reset rejection counter
+          consecutive_too_close_rejections_ = 0;
+        }
+
+        // Track the active exploration goal so EXPLORE state's distance check
+        // uses this frontier goal rather than an old waypoint (e.g. entrance).
+        current_goal_.x = planner_goal.pose.position.x;
+        current_goal_.y = planner_goal.pose.position.y;
+        current_goal_.z = planner_goal.pose.position.z;
+        
+        // Track when goal was set and drone position for timeout/movement detection
+        goal_set_time_ = this->now();
+        last_pose_at_goal_set_ = current_pose_.position;
+
+        planner_goal_pub_->publish(planner_goal);
+        goal_active_ = true;
+
+        // Successful goal activation: reset failure tracking
+        consecutive_goal_request_failures_ = 0;
+        last_successful_exploration_goal_time_ = this->now();
+
+        RCLCPP_INFO(
+            this->get_logger(),
+            "Navigating to exploration goal via planner: [%.2f, %.2f, %.2f] "
+            "(distance=%.2f m)",
+            planner_goal.pose.position.x, planner_goal.pose.position.y,
+            planner_goal.pose.position.z, goal_dist);
+      });
 }
 
-}  // namespace control
+} // namespace control

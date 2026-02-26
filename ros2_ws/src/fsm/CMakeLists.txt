@@ -16,7 +16,9 @@ find_package(nav_msgs REQUIRED)
 find_package(trajectory_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
+find_package(tf2_geometry_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
+find_package(exploring REQUIRED)
 
 # --- Include directories ---
 include_directories(include)
@@ -38,7 +40,9 @@ ament_target_dependencies(mission_fsm_node_lib
   trajectory_msgs
   tf2
   tf2_ros
+  tf2_geometry_msgs
   visualization_msgs
+  exploring
 )
 
 add_executable(mission_fsm_node
@@ -57,6 +61,7 @@ ament_target_dependencies(mission_fsm_node
   trajectory_msgs
   tf2
   tf2_ros
+  tf2_geometry_msgs
   visualization_msgs
 )
 
@@ -86,6 +91,7 @@ ament_export_dependencies(
   trajectory_msgs
   tf2
   tf2_ros
+  tf2_geometry_msgs
   visualization_msgs
 )
 

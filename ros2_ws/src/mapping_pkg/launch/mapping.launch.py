@@ -7,8 +7,8 @@ from launch.substitutions import LaunchConfiguration
 def generate_launch_description():
     # 1. Define Arguments (Variables your teammates can change)
     resolution_arg = DeclareLaunchArgument(
-        'resolution', default_value='0.1',
-        description='Size of the voxels in meters (0.1 = 10cm)'
+        'resolution', default_value='0.15',
+        description='Size of the voxels in meters (0.15 = 15cm)'
     )
     
     # 2. Define the Node
@@ -21,8 +21,8 @@ def generate_launch_description():
             'resolution': LaunchConfiguration('resolution'),
             'frame_id': 'world',
             'use_sim_time': True,             # FIX 1: Sync Time
-            'sensor_model/max_range': 10.0,
-            'latch': True,
+            'sensor_model/max_range': 5.0,    # OPTIMIZATION: Reduce range to speed up updates
+            'latch': False,                   # OPTIMIZATION: Don't latch to reduce overhead
             'filter_ground': False,
             'base_frame_id': 'body',
             'qos_overrides./cloud_in.subscription.reliability': 'best_effort' # FIX 2: Accept Camera Data

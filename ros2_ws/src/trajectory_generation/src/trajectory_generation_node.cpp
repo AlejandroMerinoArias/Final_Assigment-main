@@ -74,7 +74,11 @@ private:
       return;
     }
 
+    // Replace current trajectory with new one for smooth replanning
+    // The planner uses current odometry state, ensuring continuity across replans
     trajectory_ = trajectory;
+    RCLCPP_INFO(get_logger(), "New trajectory planned with duration %.2f s, replacing previous trajectory",
+                trajectory_.getMaxTime());
     last_frame_id_ = path->header.frame_id.empty() ? "world" : path->header.frame_id;
     segment_times_ = trajectory_.getSegmentTimes();
     mav_msgs::EigenTrajectoryPoint start_point;

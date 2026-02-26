@@ -23,42 +23,45 @@ public:
     RCLCPP_INFO(get_logger(), "Lantern detection logger initialized");
   }
 
-  void WriteDetectionsToFile() {
-    const auto output_file = get_parameter("output_file").as_string();
-    std::filesystem::path output_path(output_file);
-    std::vector<std::string> lines;
-    lines.emplace_back("frame_id,x,y,z");
-    lines.reserve(detections_.size() + 1);
-    for (const auto & detection : detections_) {
-      const auto & position = detection.pose.position;
-      std::ostringstream line;
-      line << detection.header.frame_id << ','
-           << std::fixed << std::setprecision(3)
-           << position.x << ',' << position.y << ',' << position.z;
-      lines.push_back(line.str());
-    }
 
-    try {
-      if (output_path.has_parent_path() && !output_path.parent_path().empty()) {
-        std::filesystem::create_directories(output_path.parent_path());
-      }
-      std::ofstream file(output_path);
-      if (!file.is_open()) {
-        RCLCPP_WARN(get_logger(), "Failed to open lantern detections file: %s", output_file.c_str());
-        return;
-      }
-      for (const auto & line : lines) {
-        file << line << '\n';
-      }
-      RCLCPP_INFO(get_logger(), "Wrote lantern detections to %s", output_file.c_str());
-    } catch (const std::exception & exc) {
-      RCLCPP_WARN(get_logger(), "Failed to write lantern detections: %s", exc.what());
-    }
-  }
 
 private:
   void OnDetection(const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
     detections_.push_back(*msg);
+    
+    // Write immediately to file
+    const auto output_file = this->get_parameter("output_file").as_string();
+    std::filesystem::path output_path(output_file);
+    
+    try {
+      if (output_path.has_parent_path() && !output_path.parent_path().empty()) {
+        std::filesystem::create_directories(output_path.parent_path());
+      }
+      
+      bool file_exists = std::filesystem::exists(output_path);
+      // Open in append mode
+      std::ofstream file(output_path, std::ios::app);
+      if (!file.is_open()) {
+        RCLCPP_WARN(get_logger(), "Failed to open lantern detections file: %s", output_file.c_str());
+        return;
+      }
+      
+      // Write header if file is new
+      if (!file_exists || std::filesystem::file_size(output_path) == 0) {
+        file << "frame_id,x,y,z\n";
+      }
+      
+      const auto & position = msg->pose.position;
+      file << msg->header.frame_id << ','
+           << std::fixed << std::setprecision(3)
+           << position.x << ',' << position.y << ',' << position.z << "\n";
+           
+      file.flush(); // Ensure it's written immediately
+      RCLCPP_INFO(get_logger(), "Logged lantern detection to %s", output_file.c_str());
+      
+    } catch (const std::exception & exc) {
+      RCLCPP_WARN(get_logger(), "Failed to write lantern detection: %s", exc.what());
+    }
   }
 
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr detections_sub_;
@@ -69,7 +72,7 @@ int main(int argc, char ** argv) {
   rclcpp::init(argc, argv);
   auto node = std::make_shared<LanternDetectionLoggerNode>();
   rclcpp::spin(node);
-  node->WriteDetectionsToFile();
+
   rclcpp::shutdown();
   return 0;
 }

@@ -15,8 +15,8 @@ def generate_launch_description():
     # Launch Arguments
     # =================================================================
     resolution_arg = DeclareLaunchArgument(
-        'resolution', default_value='0.1',
-        description='Size of the voxels in meters (0.1 = 10cm)'
+        'resolution', default_value='0.3',
+        description='Size of the voxels in meters (0.3 = 30cm)'
     )
 
     # RViz config file
@@ -74,7 +74,17 @@ def generate_launch_description():
     )
 
     # =================================================================
-    # 3. OctoMap Server (from mapping.launch.py)
+    # 3. Cloud Gate (only forwards point clouds when mapping is enabled)
+    # =================================================================
+    cloud_gate_node = Node(
+        package='mapping_pkg',
+        executable='cloud_gate',
+        name='cloud_gate',
+        output='screen',
+    )
+
+    # =================================================================
+    # 4. OctoMap Server (receives gated point clouds)
     # =================================================================
     octomap_node = Node(
         package='octomap_server',
@@ -85,14 +95,14 @@ def generate_launch_description():
             'resolution': LaunchConfiguration('resolution'),
             'frame_id': 'world',
             'use_sim_time': True,
-            'sensor_model/max_range': 10.0,
+            'sensor_model/max_range': 5.0,
             'latch': True,
             'filter_ground': False,
             'base_frame_id': 'body',
             'qos_overrides./cloud_in.subscription.reliability': 'best_effort'
         }],
         remappings=[
-            ('cloud_in', '/camera/depth/points'),
+            ('cloud_in', '/gated_cloud'),
             ('octomap_binary', '/octomap_binary'),
             ('occupied_cells_vis_array', '/occupied_cells_vis_array')
         ]
@@ -106,7 +116,18 @@ def generate_launch_description():
         executable='mission_fsm_node',
         name='mission_fsm_node',
         output='screen',
-        parameters=[],
+        parameters=[
+            # Minimum distance for exploration goals (meters)
+            # Goals closer than this will be rejected to avoid tiny steps
+            {'min_exploration_goal_distance': 3.0},
+            # Goal-selection watchdog configuration
+            # If we have not activated a new exploration goal for this many
+            # seconds, consider goal selection \"stuck\" (logs only, keeps exploring).
+            {'explore_goal_selection_timeout': 60.0},
+            # Maximum number of consecutive failed exploration goal requests
+            # before logging that goal selection appears stuck.
+            {'explore_goal_selection_max_failures': 50},
+        ],
     )
 
     # =================================================================
@@ -126,6 +147,34 @@ def generate_launch_description():
         parameters=[trajectory_config],
         remappings=[
             ("odom", "/current_state_est"),
+        ],
+    )
+
+    # =================================================================
+    # 5b. Global Planner Node (planner goal -> waypoints path)
+    # =================================================================
+    global_planner_node = Node(
+        package="planning",
+        executable="global_planner_node",
+        name="global_planner_node",
+        output="screen",
+        parameters=[
+            {
+                "path_topic": "waypoints",
+                "goal_topic": "/planner/goal",
+                "odom_topic": "/current_state_est",
+                "octomap_topic": "/octomap_binary",
+                # Safety / inflation parameters
+                # Effective collision radius of the robot in meters.
+                # This is the PRIMARY collision avoidance parameter — it controls
+                # how close the planned flight path can get to walls/obstacles.
+                # Increase this if the drone is still colliding with walls.
+                "robot_radius": 1.5,
+                # Collision check sampling resolution (meters)
+                # Smaller = safer but slower. Should be << robot_radius.
+                # Default 0.1m provides good safety/performance balance.
+                "collision_check_resolution": 0.2,
+            }
         ],
     )
 
@@ -193,6 +242,37 @@ def generate_launch_description():
         ],
     )
 
+    # =================================================================
+    # 8. Exploration Manager (frontier-based exploration)
+    # =================================================================
+    exploration_manager_node = Node(
+        package='exploring',
+        executable='exploration_manager',
+        name='exploration_manager',
+        output='screen',
+        parameters=[
+            {'min_frontier_size': 5},
+            {'update_rate_hz': 4.0}, # Faster update rate for sampling (lightweight)
+            
+            # Dai-Lite Sampling Parameters
+            {'num_candidates': 20},           # Random samples per request
+            {'downsample_grid': 1.0},         # Spatial spreading grid (m)
+            {'frontier_search_radius': 10.0}, # BBX radius for frontier detection (m)
+            
+            # Scoring & Constraints
+            {'drone_speed': 2.0},             # For travel time estimation (m/s)
+            {'vertical_penalty_weight': 2.0}, # Penalty for altitude changes
+            {'min_goal_distance': 5.0},       # Reject frontiers too close to drone (m)
+            {'max_step_distance': 30.0},      # Max goal distance from drone (m)
+            
+            # Safety
+            {'exploration_inflation_radius': 0.6},  # Goal selection only — planner's robot_radius handles path safety
+            {'cave_entrance_x': -320.0},      # Actual cave entrance X coordinate
+            {'min_z': -10.0},                   # Minimum navigable altitude (m)
+            {'max_z': 50.0},                  # Maximum navigable altitude (m)
+        ],
+    )
+
 
     # =================================================================
     # Launch Description
@@ -208,10 +288,13 @@ def generate_launch_description():
         body_to_camera_tf,
         pointcloud_transformer_node,
         # Mapping
+        cloud_gate_node,
         octomap_node,
         # FSM & Visualization
         fsm_node,
         trajectory_generation_node,
+        global_planner_node,
         lantern_marker_node,
+        exploration_manager_node,
         rviz_node,
     ])

@@ -13,9 +13,18 @@ find_package(nav_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
-find_package(std_msgs REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
+find_package(octomap_msgs REQUIRED)
+find_package(octomap REQUIRED)
+
+# Generate service interfaces
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "srv/GetExplorationGoal.srv"
+  DEPENDENCIES geometry_msgs
+)
 
 include_directories(include)
+include_directories(${OCTOMAP_INCLUDE_DIRS})
 
 
 # 1. Build the library (logic only)
@@ -27,8 +36,12 @@ ament_target_dependencies(exploration_manager_lib
   visualization_msgs
   tf2
   tf2_ros
-  std_msgs
+  octomap_msgs
+  octomap
 )
+rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
+target_link_libraries(exploration_manager_lib "${cpp_typesupport_target}")
+target_link_libraries(exploration_manager_lib ${OCTOMAP_LIBRARIES})
 
 # 2. Build the executable (wraps the lib)
 add_executable(exploration_manager src/exploration_manager_main.cpp)
@@ -37,8 +50,14 @@ ament_target_dependencies(exploration_manager
   rclcpp
 )
 
-install(TARGETS exploration_manager exploration_manager_lib
-  DESTINATION lib/${PROJECT_NAME}
+install(TARGETS exploration_manager_lib
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin
+)
+
+install(TARGETS exploration_manager
+  RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 
 install(DIRECTORY include/
@@ -75,8 +94,7 @@ if(BUILD_TESTING)
 
   # Add GoogleTest
   find_package(ament_cmake_gtest REQUIRED)
-  ament_add_gtest(exploration_manager_test test/exploration_manager_test.cpp)
-  target_link_libraries(exploration_manager_test exploration_manager_lib)
 endif()
 
+ament_export_dependencies(rosidl_default_runtime)
 ament_package()

@@ -49,6 +49,9 @@ private:
 
   rclcpp::Node * node_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_odom_;
+  rclcpp::TimerBase::SharedPtr position_log_timer_;
+
+  void positionLogCallback();
 
   Eigen::Affine3d current_pose_;
   Eigen::Vector3d current_velocity_;
