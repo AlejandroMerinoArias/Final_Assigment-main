@@ -23,13 +23,18 @@ ExplorationManager::ExplorationManager()
       max_step_distance_(1.0), cave_entrance_x_(-320.0),
       exploration_inflation_radius_(0.7), min_goal_distance_(3.0),
       num_candidates_(20), downsample_grid_(1.0), drone_speed_(1.0),
-      vertical_penalty_weight_(2.0), frontier_search_radius_(25.0),
+      vertical_penalty_weight_(2.0), vertical_penalty_deadband_(1.0),
+      max_goal_z_delta_(2.0), max_goal_z_delta_stuck_bonus_(2.0),
+      frontier_search_radius_(25.0),
       request_count_(0), consecutive_failures_(0),
       fail_stat_blacklist_(0.0), fail_stat_obstacle_(0.0), fail_stat_distance_(0.0),
       fail_stat_cave_(0.0), fail_stat_los_(0.0),
       min_stuck_failures_(10), stuck_fraction_threshold_(0.5), stuck_alpha_(0.25),
       los_short_range_threshold_(6.0),
-      branch_commitment_weight_(0.35), max_branch_bonus_(0.35) {
+      branch_commitment_weight_(0.35), max_branch_bonus_(0.35),
+      goal_history_max_size_(60), recent_goal_hard_reject_radius_(2.2),
+      recent_goal_hard_reject_count_(12), revisit_penalty_radius_(4.5),
+      revisit_penalty_weight_(0.85) {
   // Declare and read parameters
   this->declare_parameter("min_frontier_size", min_frontier_size_);
   this->declare_parameter("blacklist_radius", blacklist_radius_);
@@ -44,6 +49,9 @@ ExplorationManager::ExplorationManager()
   this->declare_parameter("downsample_grid", downsample_grid_);
   this->declare_parameter("drone_speed", drone_speed_);
   this->declare_parameter("vertical_penalty_weight", vertical_penalty_weight_);
+  this->declare_parameter("vertical_penalty_deadband", vertical_penalty_deadband_);
+  this->declare_parameter("max_goal_z_delta", max_goal_z_delta_);
+  this->declare_parameter("max_goal_z_delta_stuck_bonus", max_goal_z_delta_stuck_bonus_);
   this->declare_parameter("frontier_search_radius", frontier_search_radius_);
   // Stuck-mode parameters
   this->declare_parameter("min_stuck_failures", min_stuck_failures_);
@@ -52,6 +60,11 @@ ExplorationManager::ExplorationManager()
   this->declare_parameter("los_short_range_threshold", los_short_range_threshold_);
   this->declare_parameter("branch_commitment_weight", branch_commitment_weight_);
   this->declare_parameter("max_branch_bonus", max_branch_bonus_);
+  this->declare_parameter("goal_history_max_size", goal_history_max_size_);
+  this->declare_parameter("recent_goal_hard_reject_radius", recent_goal_hard_reject_radius_);
+  this->declare_parameter("recent_goal_hard_reject_count", recent_goal_hard_reject_count_);
+  this->declare_parameter("revisit_penalty_radius", revisit_penalty_radius_);
+  this->declare_parameter("revisit_penalty_weight", revisit_penalty_weight_);
 
   min_frontier_size_ = this->get_parameter("min_frontier_size").as_int();
   blacklist_radius_ = this->get_parameter("blacklist_radius").as_double();
@@ -65,6 +78,9 @@ ExplorationManager::ExplorationManager()
   downsample_grid_ = this->get_parameter("downsample_grid").as_double();
   drone_speed_ = this->get_parameter("drone_speed").as_double();
   vertical_penalty_weight_ = this->get_parameter("vertical_penalty_weight").as_double();
+  vertical_penalty_deadband_ = this->get_parameter("vertical_penalty_deadband").as_double();
+  max_goal_z_delta_ = this->get_parameter("max_goal_z_delta").as_double();
+  max_goal_z_delta_stuck_bonus_ = this->get_parameter("max_goal_z_delta_stuck_bonus").as_double();
   frontier_search_radius_ = this->get_parameter("frontier_search_radius").as_double();
   min_stuck_failures_ = this->get_parameter("min_stuck_failures").as_int();
   stuck_fraction_threshold_ = this->get_parameter("stuck_fraction_threshold").as_double();
@@ -72,6 +88,11 @@ ExplorationManager::ExplorationManager()
   los_short_range_threshold_ = this->get_parameter("los_short_range_threshold").as_double();
   branch_commitment_weight_ = this->get_parameter("branch_commitment_weight").as_double();
   max_branch_bonus_ = this->get_parameter("max_branch_bonus").as_double();
+  goal_history_max_size_ = this->get_parameter("goal_history_max_size").as_int();
+  recent_goal_hard_reject_radius_ = this->get_parameter("recent_goal_hard_reject_radius").as_double();
+  recent_goal_hard_reject_count_ = this->get_parameter("recent_goal_hard_reject_count").as_int();
+  revisit_penalty_radius_ = this->get_parameter("revisit_penalty_radius").as_double();
+  revisit_penalty_weight_ = this->get_parameter("revisit_penalty_weight").as_double();
   
   // Store base thresholds for stuck-mode relaxation
   base_min_goal_distance_ = min_goal_distance_;
@@ -84,11 +105,15 @@ ExplorationManager::ExplorationManager()
   RCLCPP_INFO(this->get_logger(), "  frontier_search_radius : %.1f m", frontier_search_radius_);
   RCLCPP_INFO(this->get_logger(), "  min_goal_distance : %.1f m", min_goal_distance_);
   RCLCPP_INFO(this->get_logger(), "  max_step_distance : %.1f m", max_step_distance_);
+  RCLCPP_INFO(this->get_logger(), "  max_goal_z_delta : %.1f m (+%.1f m in stuck mode)",
+              max_goal_z_delta_, max_goal_z_delta_stuck_bonus_);
   RCLCPP_INFO(this->get_logger(), "  inflation_radius : %.2f m", exploration_inflation_radius_);
   RCLCPP_INFO(this->get_logger(), "  cave_entrance_x : %.1f m", cave_entrance_x_);
   RCLCPP_INFO(this->get_logger(), "  Z range : %.1f - %.1f m", min_z_, max_z_);
   RCLCPP_INFO(this->get_logger(), "  branch_commitment_weight : %.2f", branch_commitment_weight_);
   RCLCPP_INFO(this->get_logger(), "  max_branch_bonus : %.2f", max_branch_bonus_);
+  RCLCPP_INFO(this->get_logger(), "  recent_goal_hard_reject_radius : %.2f m", recent_goal_hard_reject_radius_);
+  RCLCPP_INFO(this->get_logger(), "  revisit_penalty_radius : %.2f m", revisit_penalty_radius_);
 
   // TF
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
@@ -255,6 +280,7 @@ void ExplorationManager::handle_get_goal(
   double effective_obstacle_clearance = base_obstacle_clearance_;
   double effective_min_goal_distance = base_min_goal_distance_;
   double effective_blacklist_radius = base_blacklist_radius_;
+  double effective_vertical_penalty_weight = vertical_penalty_weight_;
   bool relax_los_short_range = false;
   
   if (stuck_mode != StuckMode::NONE) {
@@ -295,6 +321,10 @@ void ExplorationManager::handle_get_goal(
                       "  Relaxed obstacle clearance: %.2fm (base: %.2fm)",
                       effective_obstacle_clearance, base_obstacle_clearance_);
         }
+        // Also soften vertical penalty to allow climbing/descending around
+        // clutter in sloped cave sections.
+        effective_vertical_penalty_weight =
+            vertical_penalty_weight_ * (1.0 - 0.7 * severity);
         break;
         
       case StuckMode::LOS:
@@ -305,6 +335,8 @@ void ExplorationManager::handle_get_goal(
                       "  Relaxed LOS for candidates within %.1fm",
                       los_short_range_threshold_);
         }
+        effective_vertical_penalty_weight =
+            vertical_penalty_weight_ * (1.0 - 0.5 * severity);
         break;
         
       case StuckMode::DISTANCE:
@@ -342,7 +374,7 @@ void ExplorationManager::handle_get_goal(
   double best_utility = -1.0;
   FrontierCandidate *best_candidate = nullptr;
   int num_evaluated = 0;
-  int filt_blacklist = 0, filt_obstacle = 0, filt_distance = 0, filt_cave = 0, filt_los = 0;
+  int filt_blacklist = 0, filt_obstacle = 0, filt_distance = 0, filt_cave = 0, filt_los = 0, filt_recent = 0;
 
   for (auto &cand : candidates) {
     // Filter: Blacklist (with dynamic radius)
@@ -378,6 +410,24 @@ void ExplorationManager::handle_get_goal(
       continue;
     }
 
+    // Filter: hard reject around very recent goals to avoid hall-looping at bifurcations
+    if (!recent_issued_goals_.empty() && recent_goal_hard_reject_count_ > 0 &&
+        recent_goal_hard_reject_radius_ > 0.0) {
+      const int hard_window = std::min<int>(recent_goal_hard_reject_count_, recent_issued_goals_.size());
+      bool too_recent = false;
+      for (int i = 0; i < hard_window; ++i) {
+        const auto &recent = recent_issued_goals_[recent_issued_goals_.size() - 1 - i];
+        if (cand.position.distance(recent) < recent_goal_hard_reject_radius_) {
+          too_recent = true;
+          break;
+        }
+      }
+      if (too_recent) {
+        ++filt_recent;
+        continue;
+      }
+    }
+
     // Filter: Line-of-sight raycast (with dynamic relaxation for short range)
     {
       octomap::point3d direction = cand.position - drone_pos;
@@ -406,7 +456,8 @@ void ExplorationManager::handle_get_goal(
     }
 
     // Calculate utility
-    cand.utility = evaluate_candidate(cand.position, drone_pos);
+    cand.utility = evaluate_candidate(cand.position, drone_pos,
+                                      effective_vertical_penalty_weight);
     num_evaluated++;
 
     if (cand.utility > best_utility) {
@@ -418,8 +469,8 @@ void ExplorationManager::handle_get_goal(
   // 5. Select best (Adaptive Utility Threshold)
   if (!best_candidate) {
     RCLCPP_WARN(this->get_logger(),
-                "All %zu candidates filtered: blacklist=%d, obstacle=%d, distance=%d, cave=%d, los=%d",
-                candidates.size(), filt_blacklist, filt_obstacle, filt_distance, filt_cave, filt_los);
+                "All %zu candidates filtered: blacklist=%d, obstacle=%d, distance=%d, cave=%d, los=%d, recent=%d",
+                candidates.size(), filt_blacklist, filt_obstacle, filt_distance, filt_cave, filt_los, filt_recent);
     response->success = false;
     response->message = "No valid candidates found after filtering.";
     consecutive_failures_++; // Increment failure count to try harder next time
@@ -466,8 +517,12 @@ void ExplorationManager::handle_get_goal(
   goal_point.y = best_candidate->position.y();
   goal_point.z = best_candidate->position.z();
 
-  // Clamp goal altitude to ±3m of drone altitude (prevent dangerous vertical excursions)
-  const double max_z_delta = 2.0;
+  // Clamp goal altitude around the drone.
+  // In stuck mode, allow a wider vertical window to escape floor/ceiling traps.
+  double max_z_delta = max_goal_z_delta_;
+  if (stuck_mode != StuckMode::NONE) {
+    max_z_delta += max_goal_z_delta_stuck_bonus_ * severity;
+  }
   if (goal_point.z > drone_z + max_z_delta) {
     goal_point.z = drone_z + max_z_delta;
   } else if (goal_point.z < drone_z - max_z_delta) {
@@ -482,6 +537,15 @@ void ExplorationManager::handle_get_goal(
     goal_point.y = drone_y + (goal_point.y - drone_y) * scale;
     goal_point.z = drone_z + (goal_point.z - drone_z) * scale;
     RCLCPP_INFO(this->get_logger(), "Goal clamped to %.2fm step (was %.2fm)", max_step_distance_, dist_goal);
+  }
+
+  // Remember issued goal to discourage revisits in junction halls.
+  recent_issued_goals_.emplace_back(static_cast<float>(goal_point.x),
+                                    static_cast<float>(goal_point.y),
+                                    static_cast<float>(goal_point.z));
+  while (goal_history_max_size_ > 0 &&
+         static_cast<int>(recent_issued_goals_.size()) > goal_history_max_size_) {
+    recent_issued_goals_.pop_front();
   }
 
   response->success = true;
@@ -687,9 +751,10 @@ std::vector<FrontierCandidate> ExplorationManager::sample_candidates(
   return candidates;
 }
 
-double ExplorationManager::evaluate_candidate(const octomap::point3d &candidate,
-                                              const octomap::point3d &drone_pos) {
-  
+double ExplorationManager::evaluate_candidate(
+    const octomap::point3d &candidate, const octomap::point3d &drone_pos,
+    double vertical_penalty_weight) const {
+
   double dx = candidate.x() - drone_pos.x();
   double dy = candidate.y() - drone_pos.y();
   double dz = candidate.z() - drone_pos.z();
@@ -699,8 +764,11 @@ double ExplorationManager::evaluate_candidate(const octomap::point3d &candidate,
   double time = dist_3d / drone_speed_;
   if (time < 0.1) time = 0.1;
 
-  // Z-penalty (virtual time dilation for altitude change)
-  double z_penalty = 1.0 + vertical_penalty_weight_ * std::abs(dz);
+  // Z-penalty (virtual time dilation for altitude change).
+  // Apply deadband to avoid over-penalizing useful slope-following moves.
+  const double dz_for_penalty =
+      std::max(0.0, std::abs(dz) - vertical_penalty_deadband_);
+  double z_penalty = 1.0 + vertical_penalty_weight * dz_for_penalty;
   
   double effective_time = time * z_penalty;
 
@@ -739,8 +807,29 @@ double ExplorationManager::evaluate_candidate(const octomap::point3d &candidate,
       utility *= bonus;
     }
   }
+
+  // Novelty term: reduce utility near recently issued goals to avoid loops
+  // around bifurcation halls where frontiers stay partially visible.
+  utility *= compute_revisit_factor(candidate);
   
   return utility;
+}
+
+double ExplorationManager::compute_revisit_factor(const octomap::point3d &candidate) const {
+  if (recent_issued_goals_.empty() || revisit_penalty_radius_ <= 0.0 ||
+      revisit_penalty_weight_ <= 0.0) {
+    return 1.0;
+  }
+
+  double min_dist = std::numeric_limits<double>::max();
+  for (const auto &p : recent_issued_goals_) {
+    min_dist = std::min(min_dist, static_cast<double>(candidate.distance(p)));
+  }
+
+  const double sigma = std::max(0.5, revisit_penalty_radius_);
+  const double proximity = std::exp(-(min_dist * min_dist) / (2.0 * sigma * sigma));
+  const double factor = 1.0 - revisit_penalty_weight_ * proximity;
+  return std::clamp(factor, 0.05, 1.0);
 }
 
 bool ExplorationManager::is_too_close_to_obstacle(double x, double y, double z) const {

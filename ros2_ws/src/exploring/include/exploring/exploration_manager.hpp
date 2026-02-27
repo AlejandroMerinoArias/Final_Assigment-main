@@ -26,6 +26,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <deque>
 
 namespace planning {
 
@@ -102,7 +103,11 @@ private:
 
   /// Evaluate a single candidate's utility = 1 / effective_time
   double evaluate_candidate(const octomap::point3d &candidate,
-                            const octomap::point3d &drone_pos);
+                            const octomap::point3d &drone_pos,
+                            double vertical_penalty_weight) const;
+
+   /// Compute novelty factor in (0,1] based on distance to recent goals.
+  double compute_revisit_factor(const octomap::point3d &candidate) const;
 
   /// Check if a point is too close to obstacles (within inflation radius).
   /// Uses the 3D OctoMap to check for occupied voxels within the inflation radius.
@@ -193,6 +198,9 @@ private:
   double downsample_grid_;     ///< Voxel grid size for spatial spreading (m)
   double drone_speed_;         ///< Assumed drone speed for time estimation (m/s)
   double vertical_penalty_weight_; ///< Penalty weight for altitude changes
+  double vertical_penalty_deadband_; ///< No altitude penalty inside this |dz| (m)
+  double max_goal_z_delta_; ///< Max |z_goal-z_drone| clamp during normal mode (m)
+  double max_goal_z_delta_stuck_bonus_; ///< Extra clamp allowance in stuck mode (m)
   double frontier_search_radius_; ///< Radius around drone to search for frontiers (m)
   
   int consecutive_failures_;   ///< Track consecutive goal generation failures for adaptive scaling
@@ -226,6 +234,14 @@ private:
   double max_branch_bonus_;
   /// Preferred exploration heading in XY plane, updated after each accepted goal.
   std::optional<octomap::point3d> preferred_heading_xy_;
+
+  // --- Goal novelty memory (anti-looping in branch halls) ---------------
+  std::deque<octomap::point3d> recent_issued_goals_;
+  int goal_history_max_size_;
+  double recent_goal_hard_reject_radius_;
+  int recent_goal_hard_reject_count_;
+  double revisit_penalty_radius_;
+  double revisit_penalty_weight_;
 };
 
 } // namespace planning
