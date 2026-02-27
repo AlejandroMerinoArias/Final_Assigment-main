@@ -1,13 +1,21 @@
 trajectory_generation:
   ros__parameters:
     # Dynamic constraints - these are UPPER BOUNDS (inequality constraints)
-    max_v: 30.0    # m/s — maximum velocity magnitude for safe cave navigation
-    max_a: 3.0    # m/s² — maximum acceleration magnitude to prevent overshoot on turns
+    max_v: 50.0    # m/s — maximum velocity magnitude for safe cave navigation
+    max_a: 10.0    # m/s² — maximum acceleration magnitude to prevent overshoot on turns
     
     publish_whole_trajectory: false
     dt: 0.01
     marker_distance: 0.2
     path_topic: "waypoints"
+
+    # Automatic tangent velocity constraints at intermediate waypoints.
+    # This reduces looping/overshoot at high max_v/max_a by aligning derivatives
+    # with the local path direction and slowing down at corners.
+    enable_auto_waypoint_tangents: true
+    auto_tangent_velocity_ratio: 0.55
+    auto_tangent_min_speed: 0.25
+    auto_tangent_turn_slowdown: 0.15
 
     # Optional defaults applied to all waypoints (world frame)
     # Setting non-zero default_waypoint_velocity encourages fly-through behavior

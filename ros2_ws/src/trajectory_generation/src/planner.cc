@@ -1,5 +1,7 @@
 #include "../include/trajectory_generation/planner.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <utility>
 
 TrajectoryPlanner::TrajectoryPlanner(rclcpp::Node &node)
@@ -8,7 +10,9 @@ TrajectoryPlanner::TrajectoryPlanner(rclcpp::Node &node)
       current_angular_velocity_(Eigen::Vector3d::Zero()), odom_received_(false),
       max_v_(0.2), max_a_(0.2), max_ang_v_(0.0), max_ang_a_(0.0),
       waypoint_velocities_(), waypoint_accelerations_(),
-      default_waypoint_velocity_(), default_waypoint_acceleration_() {
+      default_waypoint_velocity_(), default_waypoint_acceleration_(),
+      enable_auto_waypoint_tangents_(true), auto_tangent_velocity_ratio_(0.55),
+      auto_tangent_min_speed_(0.25), auto_tangent_turn_slowdown_(0.15) {
   // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   //  To Do: Load Trajectory Parameters from parameter file (ROS2)
   // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -32,6 +36,14 @@ TrajectoryPlanner::TrajectoryPlanner(rclcpp::Node &node)
                                                   default_waypoint_velocity_);
     node_->declare_parameter<std::vector<double>>(
         "default_waypoint_acceleration", default_waypoint_acceleration_);
+    node_->declare_parameter<bool>("enable_auto_waypoint_tangents",
+                                   enable_auto_waypoint_tangents_);
+    node_->declare_parameter<double>("auto_tangent_velocity_ratio",
+                                     auto_tangent_velocity_ratio_);
+    node_->declare_parameter<double>("auto_tangent_min_speed",
+                                     auto_tangent_min_speed_);
+    node_->declare_parameter<double>("auto_tangent_turn_slowdown",
+                                     auto_tangent_turn_slowdown_);
   } catch (const rclcpp::exceptions::ParameterAlreadyDeclaredException &) {
   } catch (const std::exception &e) {
     RCLCPP_ERROR(node_->get_logger(),
@@ -51,6 +63,14 @@ TrajectoryPlanner::TrajectoryPlanner(rclcpp::Node &node)
                                default_waypoint_velocity_);
     (void)node_->get_parameter("default_waypoint_acceleration",
                                default_waypoint_acceleration_);
+    (void)node_->get_parameter("enable_auto_waypoint_tangents",
+                               enable_auto_waypoint_tangents_);
+    (void)node_->get_parameter("auto_tangent_velocity_ratio",
+                               auto_tangent_velocity_ratio_);
+    (void)node_->get_parameter("auto_tangent_min_speed",
+                               auto_tangent_min_speed_);
+    (void)node_->get_parameter("auto_tangent_turn_slowdown",
+                               auto_tangent_turn_slowdown_);
   } catch (const std::exception &e) {
     RCLCPP_ERROR(node_->get_logger(),
                  "Exception while reading parameters: %s. Using defaults.",
@@ -61,6 +81,12 @@ TrajectoryPlanner::TrajectoryPlanner(rclcpp::Node &node)
               "Loaded trajectory params: max_v=%.3f [m/s], max_a=%.3f [m/s^2], "
               "max_ang_v=%.3f [rad/s], max_ang_a=%.3f [rad/s^2]",
               max_v_, max_a_, max_ang_v_, max_ang_a_);
+  RCLCPP_INFO(node_->get_logger(),
+              "Auto tangent constraints: enabled=%s, ratio=%.2f, min_speed=%.2f, "
+              "turn_slowdown=%.2f",
+              enable_auto_waypoint_tangents_ ? "true" : "false",
+              auto_tangent_velocity_ratio_, auto_tangent_min_speed_,
+              auto_tangent_turn_slowdown_);
 
   if (default_waypoint_velocity_.size() == 3) {
     RCLCPP_INFO(node_->get_logger(),
@@ -172,6 +198,43 @@ bool TrajectoryPlanner::loadWaypointConstraints(
   return true;
 }
 
+Eigen::Vector3d TrajectoryPlanner::computeAutoWaypointVelocity(
+    const std::vector<Eigen::Vector3d> &path_points,
+    const size_t waypoint_index) const {
+  if (path_points.empty() || waypoint_index >= path_points.size()) {
+    return Eigen::Vector3d::Zero();
+  }
+
+  if (waypoint_index == 0 || waypoint_index + 1 >= path_points.size()) {
+    return Eigen::Vector3d::Zero();
+  }
+
+  const Eigen::Vector3d to_prev = path_points[waypoint_index] - path_points[waypoint_index - 1];
+  const Eigen::Vector3d to_next = path_points[waypoint_index + 1] - path_points[waypoint_index];
+  const double len_prev = to_prev.norm();
+  const double len_next = to_next.norm();
+  if (len_prev < 1e-3 || len_next < 1e-3) {
+    return Eigen::Vector3d::Zero();
+  }
+
+  const Eigen::Vector3d dir_prev = to_prev / len_prev;
+  const Eigen::Vector3d dir_next = to_next / len_next;
+  Eigen::Vector3d tangent = dir_prev + dir_next;
+  if (tangent.norm() < 1e-4) {
+    tangent = dir_next;
+  } else {
+    tangent.normalize();
+  }
+
+  const double corner_cos = std::clamp(dir_prev.dot(dir_next), -1.0, 1.0);
+  const double turn_factor = std::max(auto_tangent_turn_slowdown_, (corner_cos + 1.0) * 0.5);
+  const double local_distance = std::min(len_prev, len_next);
+  const double accel_limited_speed = std::sqrt(std::max(0.0, max_a_ * local_distance));
+  const double desired_speed = std::min(max_v_ * auto_tangent_velocity_ratio_, accel_limited_speed);
+  const double speed = std::clamp(desired_speed * turn_factor, auto_tangent_min_speed_, max_v_);
+  return tangent * speed;
+}
+
 // Plans a trajectory from the current position through a path of waypoints.
 bool TrajectoryPlanner::planTrajectoryFromPath(
     const nav_msgs::msg::Path &path,
@@ -209,7 +272,13 @@ bool TrajectoryPlanner::planTrajectoryFromPath(
   Eigen::Vector3d start_velocity = current_velocity_;
   if (start_velocity.norm() < kMinVelocityThreshold) {
     start_velocity = Eigen::Vector3d::Zero();
-  }
+  } else if (start_velocity.norm() > max_v_) {
+    start_velocity = start_velocity.normalized() * max_v_;
+    RCLCPP_WARN(node_->get_logger(),
+                "Start velocity %.2f m/s exceeds max_v %.2f; clamping for stable "
+                "replanning.",
+                current_velocity_.norm(), max_v_);
+  } 
   start.addConstraint(mav_trajectory_generation::derivative_order::VELOCITY,
                       start_velocity);
 
@@ -220,6 +289,14 @@ bool TrajectoryPlanner::planTrajectoryFromPath(
   std::vector<Eigen::Vector3d> waypoint_accelerations;
   (void)loadWaypointConstraints(path, &waypoint_velocities,
                                 &waypoint_accelerations);
+
+  std::vector<Eigen::Vector3d> path_points;
+  path_points.reserve(path.poses.size() + 1);
+  path_points.push_back(current_pose_.translation());
+  for (const auto &waypoint : path.poses) {
+    path_points.emplace_back(waypoint.pose.position.x, waypoint.pose.position.y,
+                             waypoint.pose.position.z);
+  }
 
   /******* Configure trajectory (intermediate waypoints) *******/
   RCLCPP_INFO(node_->get_logger(),
@@ -341,6 +418,14 @@ bool TrajectoryPlanner::planTrajectoryFromPath(
         middle.addConstraint(
             mav_trajectory_generation::derivative_order::VELOCITY,
             waypoint_velocities[i]);
+      } else if (enable_auto_waypoint_tangents_) {
+        const Eigen::Vector3d auto_velocity =
+            computeAutoWaypointVelocity(path_points, i + 1);
+        if (auto_velocity.norm() > 1e-3) {
+          middle.addConstraint(
+              mav_trajectory_generation::derivative_order::VELOCITY,
+              auto_velocity);
+        }
       }
       if (i < waypoint_accelerations.size()) {
         middle.addConstraint(

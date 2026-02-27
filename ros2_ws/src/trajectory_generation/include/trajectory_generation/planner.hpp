@@ -47,6 +47,10 @@ private:
     std::vector<Eigen::Vector3d> * velocities,
     std::vector<Eigen::Vector3d> * accelerations) const;
 
+  Eigen::Vector3d computeAutoWaypointVelocity(
+    const std::vector<Eigen::Vector3d> & path_points,
+    size_t waypoint_index) const;
+
   rclcpp::Node * node_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_odom_;
   rclcpp::TimerBase::SharedPtr position_log_timer_;
@@ -67,6 +71,11 @@ private:
   std::vector<double> waypoint_accelerations_;
   std::vector<double> default_waypoint_velocity_;
   std::vector<double> default_waypoint_acceleration_;
+
+  bool enable_auto_waypoint_tangents_;
+  double auto_tangent_velocity_ratio_;
+  double auto_tangent_min_speed_;
+  double auto_tangent_turn_slowdown_;
 };
 
 #endif  // TRAJECTORY_GENERATION__PLANNER_HPP_
