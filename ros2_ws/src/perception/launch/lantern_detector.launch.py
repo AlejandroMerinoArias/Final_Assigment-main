@@ -21,6 +21,7 @@ def generate_launch_description():
                 "hsv_lower": [20, 70, 70],
                 "hsv_upper": [70, 255, 255],
                 "gating_distance": 2.0,
+                "track_merge_distance": 2.5,
                 "min_observations": 5,
             }
         ],

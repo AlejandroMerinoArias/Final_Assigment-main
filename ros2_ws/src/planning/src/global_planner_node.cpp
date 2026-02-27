@@ -3,6 +3,7 @@
 #include <limits>
 #include <memory>
 #include <random>
+#include <string>
 #include <vector>
 
 #include <Eigen/Dense>
@@ -29,7 +30,7 @@ public:
         robot_radius_(0.7),
         collision_check_resolution_(0.1), // NEW: explicit control over sampling
         local_box_size_(40.0), z_band_(1.5), step_size_(2.0), goal_radius_(3.0),
-        max_iterations_(2000) {
+        max_iterations_(2000), max_planning_time_sec_(1.5) {
     robot_radius_ =
         this->declare_parameter<double>("robot_radius", robot_radius_);
     collision_check_resolution_ = this->declare_parameter<double>(
@@ -41,6 +42,8 @@ public:
     goal_radius_ = this->declare_parameter<double>("goal_radius", goal_radius_);
     max_iterations_ =
         this->declare_parameter<int>("max_iterations", max_iterations_);
+    max_planning_time_sec_ = this->declare_parameter<double>(
+        "max_planning_time_sec", max_planning_time_sec_);
 
     path_topic_ =
         this->declare_parameter<std::string>("path_topic", "waypoints");
@@ -51,7 +54,6 @@ public:
     octomap_topic_ = this->declare_parameter<std::string>("octomap_topic",
                                                           "/octomap_binary");
 
-    path_pub_ = this->create_publisher<nav_msgs::msg::Path>(path_topic_, 1);
     path_pub_ = this->create_publisher<nav_msgs::msg::Path>(path_topic_, 1);
     planner_status_pub_ =
         this->create_publisher<std_msgs::msg::String>("/planner/status", 10);
@@ -80,9 +82,9 @@ public:
                 "GlobalPlannerNode initialized. robot_radius=%.2f m, "
                 "local_box_size=%.1f m, "
                 "z_band=%.1f m, step_size=%.1f m, goal_radius=%.1f m, "
-                "max_iterations=%d",
+                "max_iterations=%d, max_planning_time_sec=%.2f",
                 robot_radius_, local_box_size_, z_band_, step_size_,
-                goal_radius_, max_iterations_);
+                goal_radius_, max_iterations_, max_planning_time_sec_);
   }
 
 private:
@@ -174,10 +176,29 @@ private:
 
     Eigen::Vector3d goal(msg->pose.position.x, msg->pose.position.y,
                          msg->pose.position.z);
+    
+    if (!isStateFree(current_pos_)) {
+      RCLCPP_WARN(get_logger(),
+                  "Planning start is in collision at [%.2f, %.2f, %.2f].",
+                  current_pos_.x(), current_pos_.y(), current_pos_.z());
+    }
+    if (!isStateFree(goal)) {
+      RCLCPP_WARN(get_logger(),
+                  "Planning goal is in collision at [%.2f, %.2f, %.2f].",
+                  goal.x(), goal.y(), goal.z());
+      publishPlannerStatus("PLAN_FAILED");
+      publishEmptyPath(msg->header.frame_id);
+      return;
+    }
 
     nav_msgs::msg::Path path_msg;
-    if (!planPath(current_pos_, goal, path_msg)) {
-      RCLCPP_WARN(get_logger(), "Failed to find a path with RRT*.");
+    std::string failure_reason;
+    if (!planPath(current_pos_, goal, path_msg, &failure_reason)) {
+      RCLCPP_WARN(get_logger(), "Failed to find a path with RRT*: %s",
+                  failure_reason.c_str());
+      publishPlannerStatus("PLAN_FAILED");
+      publishEmptyPath(msg->header.frame_id);
+      return;
       publishPlannerStatus("PLAN_FAILED");
       return;
     }
@@ -203,22 +224,51 @@ private:
     planner_status_pub_->publish(msg);
   }
 
+  void publishEmptyPath(const std::string &frame_id) {
+    nav_msgs::msg::Path empty_path;
+    empty_path.header.stamp = this->now();
+    empty_path.header.frame_id = frame_id.empty() ? "world" : frame_id;
+    path_pub_->publish(empty_path);
+  }
+
   bool planPath(const Eigen::Vector3d &start, const Eigen::Vector3d &goal,
-                nav_msgs::msg::Path &out_path) {
+                nav_msgs::msg::Path &out_path, std::string *failure_reason) {
     if (!octree_) {
+      if (failure_reason) {
+        *failure_reason = "octree not available";
+      }
       return false;
+    }
+
+    const auto planning_start = std::chrono::steady_clock::now();
+
+    Eigen::Vector3d check_start = start;
+    if (!isStateFree(start)) {
+      Eigen::Vector3d recovered_start;
+      if (!findNearbyFreeStart(start, recovered_start)) {
+        RCLCPP_WARN(
+            get_logger(),
+            "Start state is in collision and no nearby free state was found.");
+        return false;
+      }
+      check_start = recovered_start;
+      RCLCPP_WARN(get_logger(),
+                  "Start state is in collision. Recovered planning start from "
+                  "[%.2f, %.2f, %.2f] to [%.2f, %.2f, %.2f].",
+                  start.x(), start.y(), start.z(), check_start.x(),
+                  check_start.y(), check_start.z());
     }
 
     std::vector<Node> nodes;
     nodes.reserve(static_cast<size_t>(max_iterations_) + 2);
-    nodes.push_back(Node{start, -1, 0.0});
+    nodes.push_back(Node{check_start, -1, 0.0});
 
     std::mt19937 rng(std::random_device{}());
     const double z_center = goal.z();
-    std::uniform_real_distribution<double> dist_x(start.x() - local_box_size_,
-                                                  start.x() + local_box_size_);
-    std::uniform_real_distribution<double> dist_y(start.y() - local_box_size_,
-                                                  start.y() + local_box_size_);
+    std::uniform_real_distribution<double> dist_x(
+        check_start.x() - local_box_size_, check_start.x() + local_box_size_);
+    std::uniform_real_distribution<double> dist_y(
+        check_start.y() - local_box_size_, check_start.y() + local_box_size_);
     std::uniform_real_distribution<double> dist_z(z_center - z_band_,
                                                   z_center + z_band_);
     std::uniform_real_distribution<double> dist01(0.0, 1.0);
@@ -227,6 +277,17 @@ private:
     int goal_index = -1;
 
     for (int iter = 0; iter < max_iterations_; ++iter) {
+      const double elapsed_sec =
+          std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                        planning_start)
+              .count();
+      if (elapsed_sec > max_planning_time_sec_) {
+        if (failure_reason) {
+          *failure_reason = "planning time budget exceeded";
+        }
+        return false;
+      }
+
       Eigen::Vector3d q_rand;
       // Occasionally sample the goal directly to bias towards it.
       if (dist01(rng) < 0.1) {
@@ -301,6 +362,9 @@ private:
       }
     }
     if (waypoints_raw.size() < 2) {
+      if (failure_reason) {
+        *failure_reason = "insufficient waypoints after path reconstruction";
+      }
       return false;
     }
     std::reverse(waypoints_raw.begin(), waypoints_raw.end());
@@ -321,6 +385,9 @@ private:
       last_p = p;
     }
     if (waypoints.size() < 2) {
+      if (failure_reason) {
+        *failure_reason = "all waypoints collapsed after filtering";
+      }
       return false;
     }
 
@@ -446,6 +513,48 @@ private:
     return true;
   }
 
+  bool findNearbyFreeStart(const Eigen::Vector3d &start,
+                           Eigen::Vector3d &free_start) const {
+    if (!octree_) {
+      return false;
+    }
+
+    // Try concentric shells; prioritize descending offsets first, since
+    // ceiling contacts are a common failure mode in this mission.
+    const std::vector<double> search_radii = {0.3, 0.5, 0.8, 1.2, 1.8, 2.5};
+    std::vector<double> offsets;
+    offsets.reserve(9);
+    offsets.push_back(0.0);
+    for (int i = 1; i <= 4; ++i) {
+      const double d = static_cast<double>(i) * 0.25;
+      offsets.push_back(-d);
+      offsets.push_back(d);
+    }
+
+    for (double radius : search_radii) {
+      for (double dz_norm : offsets) {
+        const double dz = dz_norm * radius;
+        const double radial_xy = std::sqrt(std::max(0.0, radius * radius - dz * dz));
+
+        const std::vector<Eigen::Vector2d> xy_samples = {
+            {0.0, 0.0},          {radial_xy, 0.0},       {-radial_xy, 0.0},
+            {0.0, radial_xy},    {0.0, -radial_xy},      {0.707 * radial_xy, 0.707 * radial_xy},
+            {-0.707 * radial_xy, 0.707 * radial_xy},     {0.707 * radial_xy, -0.707 * radial_xy},
+            {-0.707 * radial_xy, -0.707 * radial_xy}};
+
+        for (const auto &xy : xy_samples) {
+          Eigen::Vector3d candidate(start.x() + xy.x(), start.y() + xy.y(),
+                                    start.z() + dz);
+          if (isStateFree(candidate)) {
+            free_start = candidate;
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+
   // Parameters
   double robot_radius_;
   double collision_check_resolution_;
@@ -454,6 +563,7 @@ private:
   double step_size_;
   double goal_radius_;
   int max_iterations_;
+  double max_planning_time_sec_;
 
   std::string path_topic_;
   std::string goal_topic_;

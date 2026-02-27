@@ -22,6 +22,7 @@
 #include <cmath>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -215,6 +216,16 @@ private:
   double stuck_fraction_threshold_; ///< Min fraction for a filter to dominate (default 0.5)
   double stuck_alpha_;            ///< EMA alpha for failure stats (default 0.25)
   double los_short_range_threshold_; ///< Distance below which LOS is relaxed in stuck mode (default 6.0m)
+
+  // --- Branch commitment (anti-oscillation at bifurcations) -------------
+  /// Alignment weight for keeping exploration direction coherent across goals.
+  /// 0 disables this behavior.
+  double branch_commitment_weight_;
+  /// Maximum extra utility multiplier added when a candidate aligns perfectly
+  /// with the current exploration heading.
+  double max_branch_bonus_;
+  /// Preferred exploration heading in XY plane, updated after each accepted goal.
+  std::optional<octomap::point3d> preferred_heading_xy_;
 };
 
 } // namespace planning

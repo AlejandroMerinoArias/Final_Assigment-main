@@ -28,7 +28,8 @@ ExplorationManager::ExplorationManager()
       fail_stat_blacklist_(0.0), fail_stat_obstacle_(0.0), fail_stat_distance_(0.0),
       fail_stat_cave_(0.0), fail_stat_los_(0.0),
       min_stuck_failures_(10), stuck_fraction_threshold_(0.5), stuck_alpha_(0.25),
-      los_short_range_threshold_(6.0) {
+      los_short_range_threshold_(6.0),
+      branch_commitment_weight_(0.35), max_branch_bonus_(0.35) {
   // Declare and read parameters
   this->declare_parameter("min_frontier_size", min_frontier_size_);
   this->declare_parameter("blacklist_radius", blacklist_radius_);
@@ -49,6 +50,8 @@ ExplorationManager::ExplorationManager()
   this->declare_parameter("stuck_fraction_threshold", stuck_fraction_threshold_);
   this->declare_parameter("stuck_alpha", stuck_alpha_);
   this->declare_parameter("los_short_range_threshold", los_short_range_threshold_);
+  this->declare_parameter("branch_commitment_weight", branch_commitment_weight_);
+  this->declare_parameter("max_branch_bonus", max_branch_bonus_);
 
   min_frontier_size_ = this->get_parameter("min_frontier_size").as_int();
   blacklist_radius_ = this->get_parameter("blacklist_radius").as_double();
@@ -67,6 +70,8 @@ ExplorationManager::ExplorationManager()
   stuck_fraction_threshold_ = this->get_parameter("stuck_fraction_threshold").as_double();
   stuck_alpha_ = this->get_parameter("stuck_alpha").as_double();
   los_short_range_threshold_ = this->get_parameter("los_short_range_threshold").as_double();
+  branch_commitment_weight_ = this->get_parameter("branch_commitment_weight").as_double();
+  max_branch_bonus_ = this->get_parameter("max_branch_bonus").as_double();
   
   // Store base thresholds for stuck-mode relaxation
   base_min_goal_distance_ = min_goal_distance_;
@@ -82,6 +87,8 @@ ExplorationManager::ExplorationManager()
   RCLCPP_INFO(this->get_logger(), "  inflation_radius : %.2f m", exploration_inflation_radius_);
   RCLCPP_INFO(this->get_logger(), "  cave_entrance_x : %.1f m", cave_entrance_x_);
   RCLCPP_INFO(this->get_logger(), "  Z range : %.1f - %.1f m", min_z_, max_z_);
+  RCLCPP_INFO(this->get_logger(), "  branch_commitment_weight : %.2f", branch_commitment_weight_);
+  RCLCPP_INFO(this->get_logger(), "  max_branch_bonus : %.2f", max_branch_bonus_);
 
   // TF
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
@@ -484,6 +491,19 @@ void ExplorationManager::handle_get_goal(
   response->goal.pose.orientation.w = 1.0;
   response->message = "Dai-Lite goal found.";
 
+  // Update preferred heading for future branch commitment.
+  // This helps avoid left-right oscillations at cave bifurcations.
+  {
+    const double hx = goal_point.x - drone_x;
+    const double hy = goal_point.y - drone_y;
+    const double h_norm = std::hypot(hx, hy);
+    if (h_norm > 1e-3) {
+      preferred_heading_xy_ = octomap::point3d(static_cast<float>(hx / h_norm),
+                                               static_cast<float>(hy / h_norm),
+                                               0.0f);
+    }
+  }
+
   RCLCPP_INFO(this->get_logger(),
               "Goal: (%.2f, %.2f, %.2f) | U=%.3f | Candidates: %d/%zu/%zu | Dist: %.2fm",
               goal_point.x, goal_point.y, goal_point.z,
@@ -705,6 +725,21 @@ double ExplorationManager::evaluate_candidate(const octomap::point3d &candidate,
     utility *= 1.0 / lateral_ratio;  // Penalize proportionally
   }
 
+  // Branch commitment: when a preferred heading exists, reward candidates
+  // that continue in the same XY direction to reduce branch-switch oscillation.
+  if (branch_commitment_weight_ > 0.0 && preferred_heading_xy_) {
+    const double cand_xy_norm = std::hypot(dx, dy);
+    if (cand_xy_norm > 1e-3) {
+      const double cand_dir_x = dx / cand_xy_norm;
+      const double cand_dir_y = dy / cand_xy_norm;
+      const double dot = cand_dir_x * preferred_heading_xy_->x() +
+                         cand_dir_y * preferred_heading_xy_->y();
+      const double alignment = std::max(0.0, dot);  // only reward forward alignment
+      const double bonus = 1.0 + max_branch_bonus_ * branch_commitment_weight_ * alignment;
+      utility *= bonus;
+    }
+  }
+  
   return utility;
 }
 

@@ -120,6 +120,7 @@ def generate_launch_description():
             # Minimum distance for exploration goals (meters)
             # Goals closer than this will be rejected to avoid tiny steps
             {'min_exploration_goal_distance': 3.0},
+            {'lantern_dedup_threshold': 2.5},
             # Goal-selection watchdog configuration
             # If we have not activated a new exploration goal for this many
             # seconds, consider goal selection \"stuck\" (logs only, keeps exploring).
@@ -174,6 +175,9 @@ def generate_launch_description():
                 # Smaller = safer but slower. Should be << robot_radius.
                 # Default 0.1m provides good safety/performance balance.
                 "collision_check_resolution": 0.2,
+                # Hard cap for each RRT* query. Prevents planner callback from
+                # blocking for long periods in cluttered areas.
+                "max_planning_time_sec": 1.5,
             }
         ],
     )
@@ -210,6 +214,7 @@ def generate_launch_description():
                 "hsv_lower": [20, 70, 70],
                 "hsv_upper": [70, 255, 255],
                 "gating_distance": 2.0,
+                "track_merge_distance": 2.5,
                 "min_observations": 5,
             }
         ],

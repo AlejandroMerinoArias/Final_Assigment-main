@@ -6,7 +6,8 @@ MissionFsmNode::MissionFsmNode()
     : Node("mission_fsm_node"), current_state_(MissionState::INIT),
       pose_received_(false), mission_start_signal_received_(false),
       goal_active_(false), goal_request_pending_(false),
-      lanterns_found_count_(0), takeoff_altitude_(2.0), z_retry_index_(0),
+      lanterns_found_count_(0), lantern_dedup_threshold_(2.5),
+      takeoff_altitude_(2.0), z_retry_index_(0),
       goal_set_time_(this->now()), min_exploration_goal_distance_(2.0),
       consecutive_too_close_rejections_(0),
       last_successful_exploration_goal_time_(this->now()) {
@@ -21,6 +22,8 @@ MissionFsmNode::MissionFsmNode()
   last_pose_at_goal_set_.z = 0.0;
   
   // Declare and read parameters
+  this->declare_parameter("lantern_dedup_threshold", lantern_dedup_threshold_);
+  lantern_dedup_threshold_ = this->get_parameter("lantern_dedup_threshold").as_double();
   this->declare_parameter("min_exploration_goal_distance", min_exploration_goal_distance_);
   min_exploration_goal_distance_ = this->get_parameter("min_exploration_goal_distance").as_double();
   this->declare_parameter("explore_goal_selection_timeout", explore_goal_selection_timeout_);
@@ -154,7 +157,7 @@ void MissionFsmNode::lantern_callback(
                 existing_pose.position.x, existing_pose.position.y, existing_pose.position.z,
                 dist);
 
-    if (dist < LANTERN_DEDUP_THRESHOLD) {
+    if (dist <= lantern_dedup_threshold_) {
       is_new = false;
       break;
     }

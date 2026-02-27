@@ -141,7 +141,7 @@ private:
   // --- Lantern tracking ---
   std::vector<geometry_msgs::msg::Pose> detected_lantern_poses_;
   size_t lanterns_found_count_;
-  static constexpr double LANTERN_DEDUP_THRESHOLD = 2.0; // meters
+  double lantern_dedup_threshold_; // meters
   static constexpr size_t TARGET_LANTERN_COUNT = 4;
 
   // --- Mission parameters ---
