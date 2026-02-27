@@ -109,7 +109,8 @@ private:
   /// Evaluate a single candidate's utility = 1 / effective_time
   double evaluate_candidate(const octomap::point3d &candidate,
                             const octomap::point3d &drone_pos,
-                            double vertical_penalty_weight) const;
+                            double vertical_penalty_weight,
+                            const std::optional<octomap::point3d> &forward_ref_xy) const;
 
    /// Compute novelty factor in (0,1] based on distance to recent goals.
   double compute_revisit_factor(const octomap::point3d &candidate) const;
@@ -156,6 +157,12 @@ private:
   
   /// Returns true if candidate lies inside a repeatedly failed region.
   bool is_in_failed_region(const octomap::point3d &candidate) const;
+  
+  /// Compute the current XY forward reference direction.
+  /// Priority: preferred heading from recent successful goals, then
+  /// entrance->drone direction. Returns nullopt if no stable direction exists.
+  std::optional<octomap::point3d>
+  compute_forward_reference_xy(const octomap::point3d &drone_pos) const;
 
   // --- Test access ------------------------------------------------------
   friend class ExplorationManagerTest;
@@ -251,6 +258,11 @@ private:
   int recent_goal_hard_reject_count_;
   double revisit_penalty_radius_;
   double revisit_penalty_weight_;
+  double backtrack_reject_distance_;
+  double backtrack_penalty_factor_;
+
+  // --- Heading update smoothing ------------------------------------------
+  double heading_update_alpha_;
 
   // --- Failed-region memory (anti-looping after repeated planner failures) ---
   double failed_region_merge_radius_;

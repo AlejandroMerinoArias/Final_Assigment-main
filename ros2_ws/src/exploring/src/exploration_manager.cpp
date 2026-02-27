@@ -35,6 +35,9 @@ ExplorationManager::ExplorationManager()
       goal_history_max_size_(60), recent_goal_hard_reject_radius_(2.2),
       recent_goal_hard_reject_count_(12), revisit_penalty_radius_(4.5),
       revisit_penalty_weight_(0.85),
+      backtrack_reject_distance_(2.5),
+      backtrack_penalty_factor_(0.55),
+      heading_update_alpha_(0.35),
       failed_region_merge_radius_(3.0),
       failed_region_base_reject_radius_(2.0),
       failed_region_reject_radius_gain_(0.7),
@@ -69,6 +72,9 @@ ExplorationManager::ExplorationManager()
   this->declare_parameter("recent_goal_hard_reject_count", recent_goal_hard_reject_count_);
   this->declare_parameter("revisit_penalty_radius", revisit_penalty_radius_);
   this->declare_parameter("revisit_penalty_weight", revisit_penalty_weight_);
+  this->declare_parameter("backtrack_reject_distance", backtrack_reject_distance_);
+  this->declare_parameter("backtrack_penalty_factor", backtrack_penalty_factor_);
+  this->declare_parameter("heading_update_alpha", heading_update_alpha_);
   this->declare_parameter("failed_region_merge_radius", failed_region_merge_radius_);
   this->declare_parameter("failed_region_base_reject_radius", failed_region_base_reject_radius_);
   this->declare_parameter("failed_region_reject_radius_gain", failed_region_reject_radius_gain_);
@@ -101,6 +107,9 @@ ExplorationManager::ExplorationManager()
   recent_goal_hard_reject_count_ = this->get_parameter("recent_goal_hard_reject_count").as_int();
   revisit_penalty_radius_ = this->get_parameter("revisit_penalty_radius").as_double();
   revisit_penalty_weight_ = this->get_parameter("revisit_penalty_weight").as_double();
+  backtrack_reject_distance_ = this->get_parameter("backtrack_reject_distance").as_double();
+  backtrack_penalty_factor_ = this->get_parameter("backtrack_penalty_factor").as_double();
+  heading_update_alpha_ = this->get_parameter("heading_update_alpha").as_double();
   failed_region_merge_radius_ = this->get_parameter("failed_region_merge_radius").as_double();
   failed_region_base_reject_radius_ = this->get_parameter("failed_region_base_reject_radius").as_double();
   failed_region_reject_radius_gain_ = this->get_parameter("failed_region_reject_radius_gain").as_double();
@@ -126,7 +135,8 @@ ExplorationManager::ExplorationManager()
   RCLCPP_INFO(this->get_logger(), "  max_branch_bonus : %.2f", max_branch_bonus_);
   RCLCPP_INFO(this->get_logger(), "  recent_goal_hard_reject_radius : %.2f m", recent_goal_hard_reject_radius_);
   RCLCPP_INFO(this->get_logger(), "  revisit_penalty_radius : %.2f m", revisit_penalty_radius_);
-  RCLCPP_INFO(this->get_logger(), "  failed_region_base_reject_radius : %.2f m", failed_region_base_reject_radius_);
+  RCLCPP_INFO(this->get_logger(), "  backtrack_reject_distance : %.2f m", backtrack_reject_distance_);
+  RCLCPP_INFO(this->get_logger(), "  backtrack_reject_distance : %.2f m", backtrack_reject_distance_);
   
   // TF
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
@@ -403,10 +413,12 @@ void ExplorationManager::handle_get_goal(
   }
 
   // 4. Evaluate candidates
+  const auto forward_ref_xy = compute_forward_reference_xy(drone_pos);
   double best_utility = -1.0;
   FrontierCandidate *best_candidate = nullptr;
   int num_evaluated = 0;
-  int filt_blacklist = 0, filt_obstacle = 0, filt_distance = 0, filt_cave = 0, filt_los = 0, filt_recent = 0;
+  int filt_blacklist = 0, filt_obstacle = 0, filt_distance = 0, filt_cave = 0,
+      filt_los = 0, filt_recent = 0, filt_backtrack = 0;
 
   for (auto &cand : candidates) {
     // Filter: repeated-failure regions (expanded around goals that failed many times)
@@ -440,6 +452,20 @@ void ExplorationManager::handle_get_goal(
     if (dist_to_drone < effective_min_goal_distance) {
       ++filt_distance;
       continue;
+    }
+
+    // Filter: explicit backtracking rejection in normal mode.
+    // If we already have a forward reference, drop candidates that go clearly
+    // behind the current heading to avoid oscillating in intersections.
+    if (forward_ref_xy && stuck_mode == StuckMode::NONE &&
+        backtrack_reject_distance_ > 0.0) {
+      const octomap::point3d delta = cand.position - drone_pos;
+      const double projected = delta.x() * forward_ref_xy->x() +
+                               delta.y() * forward_ref_xy->y();
+      if (projected < -backtrack_reject_distance_) {
+        ++filt_backtrack;
+        continue;
+      }
     }
 
     // Filter: Outside cave (behind entrance)
@@ -495,7 +521,8 @@ void ExplorationManager::handle_get_goal(
 
     // Calculate utility
     cand.utility = evaluate_candidate(cand.position, drone_pos,
-                                      effective_vertical_penalty_weight);
+                                      effective_vertical_penalty_weight,
+                                      forward_ref_xy);
     num_evaluated++;
 
     if (cand.utility > best_utility) {
@@ -508,7 +535,8 @@ void ExplorationManager::handle_get_goal(
   if (!best_candidate) {
     RCLCPP_WARN(this->get_logger(),
                 "All %zu candidates filtered: blacklist=%d, obstacle=%d, distance=%d, cave=%d, los=%d, recent=%d",
-                candidates.size(), filt_blacklist, filt_obstacle, filt_distance, filt_cave, filt_los, filt_recent);
+                candidates.size(), filt_blacklist, filt_obstacle, filt_distance,
+                filt_cave, filt_los, filt_recent + filt_backtrack);
     response->success = false;
     response->message = "No valid candidates found after filtering.";
     consecutive_failures_++; // Increment failure count to try harder next time
@@ -600,9 +628,23 @@ void ExplorationManager::handle_get_goal(
     const double hy = goal_point.y - drone_y;
     const double h_norm = std::hypot(hx, hy);
     if (h_norm > 1e-3) {
-      preferred_heading_xy_ = octomap::point3d(static_cast<float>(hx / h_norm),
-                                               static_cast<float>(hy / h_norm),
-                                               0.0f);
+      const double nx = hx / h_norm;
+      const double ny = hy / h_norm;
+      if (!preferred_heading_xy_) {
+        preferred_heading_xy_ = octomap::point3d(static_cast<float>(nx),
+                                                 static_cast<float>(ny),
+                                                 0.0f);
+      } else {
+        const double a = std::clamp(heading_update_alpha_, 0.0, 1.0);
+        const double mx = (1.0 - a) * preferred_heading_xy_->x() + a * nx;
+        const double my = (1.0 - a) * preferred_heading_xy_->y() + a * ny;
+        const double m_norm = std::hypot(mx, my);
+        if (m_norm > 1e-3) {
+          preferred_heading_xy_ = octomap::point3d(static_cast<float>(mx / m_norm),
+                                                   static_cast<float>(my / m_norm),
+                                                   0.0f);
+        }
+      }
     }
   }
 
@@ -791,7 +833,8 @@ std::vector<FrontierCandidate> ExplorationManager::sample_candidates(
 
 double ExplorationManager::evaluate_candidate(
     const octomap::point3d &candidate, const octomap::point3d &drone_pos,
-    double vertical_penalty_weight) const {
+    double vertical_penalty_weight,
+    const std::optional<octomap::point3d> &forward_ref_xy) const {
 
   double dx = candidate.x() - drone_pos.x();
   double dy = candidate.y() - drone_pos.y();
@@ -813,22 +856,27 @@ double ExplorationManager::evaluate_candidate(
   // Base utility = 1 / time
   double utility = 1.0 / effective_time;
 
-  // Forward bias: reward going deeper into cave (more negative X)
-  // dx < 0 means candidate is deeper (forward), dx > 0 means backward
-  if (dx < 0.0) {
-    // Forward: boost utility (up to 5x for far-forward goals)
-    double forward_bonus = 1.0 + std::min(4.0, std::abs(dx) / 5.0);
-    utility *= forward_bonus;
-  } else {
-    // Backward: penalize very heavily
-    utility *= 0.1;
-  }
+  // Directional bias using an adaptive forward reference. This avoids the
+  // brittle world-X-only assumption, which breaks at turns/intersections.
+  if (forward_ref_xy) {
+    const double progress = dx * forward_ref_xy->x() + dy * forward_ref_xy->y();
+    if (progress >= 0.0) {
+      // Reward progress along current cave heading.
+      const double forward_bonus = 1.0 + std::min(3.0, progress / 5.0);
+      utility *= forward_bonus;
+    } else {
+      // Backward moves are discouraged but not zeroed to keep recovery possible.
+      utility *= backtrack_penalty_factor_;
+    }
 
-  // Lateral penalty: penalize big sideways jumps relative to forward progress
-  // A goal that's 10m sideways but only 2m forward is wasteful
-  double lateral_ratio = (std::abs(dx) > 1.0) ? std::abs(dy) / std::abs(dx) : std::abs(dy);
-  if (lateral_ratio > 1.0) {
-    utility *= 1.0 / lateral_ratio;  // Penalize proportionally
+  // Penalize very lateral moves relative to the forward projection.
+    const double lateral_sq = std::max(0.0, dx * dx + dy * dy - progress * progress);
+    const double lateral = std::sqrt(lateral_sq);
+    const double forward_mag = std::max(1.0, std::abs(progress));
+    const double lateral_ratio = lateral / forward_mag;
+    if (lateral_ratio > 1.0) {
+      utility *= 1.0 / lateral_ratio;
+    }
   }
 
   // Branch commitment: when a preferred heading exists, reward candidates
@@ -851,6 +899,32 @@ double ExplorationManager::evaluate_candidate(
   utility *= compute_revisit_factor(candidate);
   
   return utility;
+}
+
+std::optional<octomap::point3d>
+ExplorationManager::compute_forward_reference_xy(
+    const octomap::point3d &drone_pos) const {
+  if (preferred_heading_xy_) {
+    const double n = std::hypot(preferred_heading_xy_->x(), preferred_heading_xy_->y());
+    if (n > 1e-3) {
+      return octomap::point3d(static_cast<float>(preferred_heading_xy_->x() / n),
+                              static_cast<float>(preferred_heading_xy_->y() / n),
+                              0.0f);
+    }
+  }
+
+  if (has_entrance_pos_) {
+    const double ex = drone_pos.x() - entrance_pos_.x();
+    const double ey = drone_pos.y() - entrance_pos_.y();
+    const double n = std::hypot(ex, ey);
+    if (n > 1e-3) {
+      return octomap::point3d(static_cast<float>(ex / n),
+                              static_cast<float>(ey / n),
+                              0.0f);
+    }
+  }
+
+  return std::nullopt;
 }
 
 double ExplorationManager::compute_revisit_factor(const octomap::point3d &candidate) const {
