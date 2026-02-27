@@ -509,16 +509,16 @@ void MissionFsmNode::update_state() {
       else if (time_since_goal_set > GOAL_TIMEOUT_SECONDS) {
         RCLCPP_WARN(this->get_logger(),
                     "Exploration goal timeout (%.1f s > %.1f s). "
-                    "Abandoning goal [%.2f, %.2f, %.2f] "
-                    "(current distance=%.2f m, threshold=%.2f m). Requesting new one.",
+                    "Switching to recovery for goal [%.2f, %.2f, %.2f] "
+                    "(current distance=%.2f m, threshold=%.2f m).",
                     time_since_goal_set, GOAL_TIMEOUT_SECONDS,
                     current_goal_.x, current_goal_.y, current_goal_.z,
                     dist, GOAL_REACHED_THRESHOLD);
-        goal_active_ = false;
-        // Will trigger new request in next block
+        start_refine_for_current_goal("goal timeout");
+        break;
       }
       // THIRD: Check if drone is stuck (not making progress toward goal)
-      else if (time_since_goal_set > 10.0) {  // After 10 seconds, check movement
+      else if (time_since_goal_set > STUCK_DETECTION_SECONDS) {  // After 10 seconds, check movement
         double movement_since_goal = calculate_distance(
             current_pose_.position, last_pose_at_goal_set_);
         double progress_toward_goal = calculate_distance(
@@ -529,12 +529,13 @@ void MissionFsmNode::update_state() {
           RCLCPP_WARN(this->get_logger(),
                       "Drone appears stuck (moved only %.2f m in %.1f s, "
                       "distance to goal=%.2f m). "
-                      "Abandoning goal [%.2f, %.2f, %.2f] and requesting new one.",
+                      "Switching to recovery for goal [%.2f, %.2f, %.2f].",
                       movement_since_goal, time_since_goal_set, dist,
                       current_goal_.x, current_goal_.y, current_goal_.z);
-          goal_active_ = false;
-          // Will trigger new request in next block
-        } else if (progress_toward_goal < 0.5 && dist > GOAL_REACHED_THRESHOLD * 2.0) {
+          start_refine_for_current_goal("stuck with low movement");
+          break;
+        } else if (progress_toward_goal < MIN_PROGRESS_THRESHOLD &&
+                   dist > GOAL_REACHED_THRESHOLD * 2.0) {
           // Making movement but not toward goal (might be going around obstacle)
           // Only warn if we're still far from goal
           RCLCPP_DEBUG(this->get_logger(),
@@ -651,8 +652,20 @@ void MissionFsmNode::update_state() {
                     "Refined goal timeout (%.1f s). "
                     "Abandoning altitude %.2f m. Trying next option.",
                     time_since_goal_set, current_goal_.z);
+        cancel_pub_->publish(std_msgs::msg::Empty());
         goal_active_ = false;
         // Next loop iteration will trigger next Z-retry
+      } else if (time_since_goal_set > STUCK_DETECTION_SECONDS) {
+        double movement_since_goal =
+            calculate_distance(current_pose_.position, last_pose_at_goal_set_);
+        if (movement_since_goal < MIN_MOVEMENT_THRESHOLD) {
+          RCLCPP_WARN(this->get_logger(),
+                      "Refine goal stalled at altitude %.2f m (moved only %.2f m "
+                      "in %.1f s). Trying next altitude.",
+                      current_goal_.z, movement_since_goal, time_since_goal_set);
+          cancel_pub_->publish(std_msgs::msg::Empty());
+          goal_active_ = false;
+        }
       }
     }
     break;
@@ -814,6 +827,35 @@ void MissionFsmNode::publish_drone_marker() {
       rclcpp::Duration::from_seconds(0); // Persistent until updated
 
   drone_marker_pub_->publish(marker);
+}
+
+void MissionFsmNode::start_refine_for_current_goal(const std::string &reason) {
+  // If we have no active goal to refine, fallback to normal exploration loop.
+  if (!goal_active_) {
+    RCLCPP_WARN(this->get_logger(),
+                "Requested refine transition without active goal (%s).",
+                reason.c_str());
+    return;
+  }
+
+  // Keep XY fixed and try nearby altitudes. This gives the planner/controller
+  // a structured recovery path before we eventually blacklist this goal.
+  strategic_goal_ = current_goal_;
+  z_retry_altitudes_ = {current_goal_.z,
+                        current_goal_.z - 1.0,
+                        current_goal_.z + 1.0,
+                        current_goal_.z - 2.0,
+                        current_goal_.z + 2.0};
+  z_retry_index_ = 0;
+
+  cancel_pub_->publish(std_msgs::msg::Empty());
+  goal_active_ = false;
+
+  RCLCPP_WARN(this->get_logger(),
+              "Triggering REFINE_GOAL for [%.2f, %.2f, %.2f] (%s).",
+              strategic_goal_.x, strategic_goal_.y, strategic_goal_.z,
+              reason.c_str());
+  transition_to(MissionState::REFINE_GOAL);
 }
 
 void MissionFsmNode::request_exploration_goal() {

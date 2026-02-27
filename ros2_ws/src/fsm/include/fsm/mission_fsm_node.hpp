@@ -100,6 +100,7 @@ private:
       const std::vector<geometry_msgs::msg::Point> &waypoints);
   void publish_state();
   void publish_drone_marker();
+  void start_refine_for_current_goal(const std::string &reason);
 
   // --- Subscribers ---
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
@@ -156,7 +157,9 @@ private:
   static constexpr double GOAL_REACHED_THRESHOLD = 1.5; // meters - increased from 0.5m for more lenient goal completion
   double min_exploration_goal_distance_; // meters - minimum distance for new goals (configurable)
   static constexpr double GOAL_TIMEOUT_SECONDS = 30.0; // seconds - timeout for goal completion
+  static constexpr double STUCK_DETECTION_SECONDS = 10.0; // seconds before checking for stuck behavior
   static constexpr double MIN_MOVEMENT_THRESHOLD = 0.5; // meters - minimum movement to consider progress
+  static constexpr double MIN_PROGRESS_THRESHOLD = 0.5; // meters - minimum progress toward goal before warning
   static constexpr int MAX_CONSECUTIVE_TOO_CLOSE_REJECTIONS = 3; // Accept goal after this many rejections
   int consecutive_too_close_rejections_; // Counter for consecutive "too close" rejections
 
