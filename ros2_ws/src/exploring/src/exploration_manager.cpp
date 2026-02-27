@@ -41,7 +41,16 @@ ExplorationManager::ExplorationManager()
       failed_region_merge_radius_(3.0),
       failed_region_base_reject_radius_(2.0),
       failed_region_reject_radius_gain_(0.7),
-      failed_region_max_hits_(6) {
+      failed_region_max_hits_(6),
+      intersection_merge_radius_(10.0),
+      min_intersection_branches_(3),
+      branch_heading_merge_rad_(0.45),
+      topology_probe_radius_(6.0),
+      topology_num_rays_(48),
+      topology_ray_occupancy_threshold_(0.6),
+      entrance_registered_as_dead_end_(false),
+      target_lantern_count_(5),
+      desired_point_weight_(2.0) {
   // Declare and read parameters
   this->declare_parameter("min_frontier_size", min_frontier_size_);
   this->declare_parameter("blacklist_radius", blacklist_radius_);
@@ -79,6 +88,14 @@ ExplorationManager::ExplorationManager()
   this->declare_parameter("failed_region_base_reject_radius", failed_region_base_reject_radius_);
   this->declare_parameter("failed_region_reject_radius_gain", failed_region_reject_radius_gain_);
   this->declare_parameter("failed_region_max_hits", failed_region_max_hits_);
+  this->declare_parameter("intersection_merge_radius", intersection_merge_radius_);
+  this->declare_parameter("min_intersection_branches", min_intersection_branches_);
+  this->declare_parameter("branch_heading_merge_rad", branch_heading_merge_rad_);
+  this->declare_parameter("topology_probe_radius", topology_probe_radius_);
+  this->declare_parameter("topology_num_rays", topology_num_rays_);
+  this->declare_parameter("topology_ray_occupancy_threshold", topology_ray_occupancy_threshold_);
+  this->declare_parameter("target_lantern_count", static_cast<int>(target_lantern_count_));
+  this->declare_parameter("desired_point_weight", desired_point_weight_);
 
   min_frontier_size_ = this->get_parameter("min_frontier_size").as_int();
   blacklist_radius_ = this->get_parameter("blacklist_radius").as_double();
@@ -114,6 +131,14 @@ ExplorationManager::ExplorationManager()
   failed_region_base_reject_radius_ = this->get_parameter("failed_region_base_reject_radius").as_double();
   failed_region_reject_radius_gain_ = this->get_parameter("failed_region_reject_radius_gain").as_double();
   failed_region_max_hits_ = this->get_parameter("failed_region_max_hits").as_int();
+  intersection_merge_radius_ = this->get_parameter("intersection_merge_radius").as_double();
+  min_intersection_branches_ = this->get_parameter("min_intersection_branches").as_int();
+  branch_heading_merge_rad_ = this->get_parameter("branch_heading_merge_rad").as_double();
+  topology_probe_radius_ = this->get_parameter("topology_probe_radius").as_double();
+  topology_num_rays_ = this->get_parameter("topology_num_rays").as_int();
+  topology_ray_occupancy_threshold_ = this->get_parameter("topology_ray_occupancy_threshold").as_double();
+  target_lantern_count_ = static_cast<uint32_t>(this->get_parameter("target_lantern_count").as_int());
+  desired_point_weight_ = this->get_parameter("desired_point_weight").as_double();
   
   // Store base thresholds for stuck-mode relaxation
   base_min_goal_distance_ = min_goal_distance_;
@@ -136,7 +161,8 @@ ExplorationManager::ExplorationManager()
   RCLCPP_INFO(this->get_logger(), "  recent_goal_hard_reject_radius : %.2f m", recent_goal_hard_reject_radius_);
   RCLCPP_INFO(this->get_logger(), "  revisit_penalty_radius : %.2f m", revisit_penalty_radius_);
   RCLCPP_INFO(this->get_logger(), "  backtrack_reject_distance : %.2f m", backtrack_reject_distance_);
-  RCLCPP_INFO(this->get_logger(), "  backtrack_reject_distance : %.2f m", backtrack_reject_distance_);
+  RCLCPP_INFO(this->get_logger(), "  topology_probe_radius : %.2f m", topology_probe_radius_);
+  RCLCPP_INFO(this->get_logger(), "  min_intersection_branches : %d", min_intersection_branches_);
   
   // TF
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
@@ -252,7 +278,7 @@ void ExplorationManager::blacklist_callback(
 
 void ExplorationManager::handle_get_goal(
     const std::shared_ptr<
-        exploring::srv::GetExplorationGoal::Request> /* request */,
+        exploring::srv::GetExplorationGoal::Request> request,
     std::shared_ptr<exploring::srv::GetExplorationGoal::Response> response) {
   
   // Performance timing
@@ -290,6 +316,73 @@ void ExplorationManager::handle_get_goal(
   }
 
   
+    std::optional<octomap::point3d> desired_point;
+  bool at_intersection = false;
+  std::vector<double> detected_branch_headings;
+  if (detect_intersection(drone_pos, detected_branch_headings)) {
+    at_intersection = true;
+    std::optional<double> incoming_heading;
+    if (last_drone_pos_) {
+      const double dx = drone_pos.x() - last_drone_pos_->x();
+      const double dy = drone_pos.y() - last_drone_pos_->y();
+      if (std::hypot(dx, dy) > 0.3) {
+        incoming_heading = std::atan2(-dy, -dx);
+      }
+    }
+    upsert_intersection(drone_pos, detected_branch_headings, incoming_heading);
+  }
+
+  if (!entrance_registered_as_dead_end_ && has_entrance_pos_) {
+    entrance_registered_as_dead_end_ = true;
+  }
+
+  const bool dead_end = detect_dead_end(drone_pos);
+  if (dead_end && !intersections_mru_.empty()) {
+    octomap::point3d target;
+    if (find_recent_intersection_with_untraversed(target)) {
+      desired_point = target;
+      RCLCPP_INFO(this->get_logger(),
+                  "Dead-end detected. Biasing exploration back to intersection at (%.2f, %.2f).",
+                  target.x(), target.y());
+    }
+  }
+
+  if (at_intersection && !intersections_mru_.empty()) {
+    auto &current_intersection = intersections_mru_.front();
+    bool has_untraversed = false;
+    for (const auto &branch : current_intersection.branches) {
+      if (!branch.traversed) {
+        has_untraversed = true;
+        break;
+      }
+    }
+    if (!has_untraversed) {
+      octomap::point3d target;
+      if (find_recent_intersection_with_untraversed(target)) {
+        desired_point = target;
+        RCLCPP_INFO(this->get_logger(),
+                    "Intersection exhausted. Redirecting toward recent pending intersection (%.2f, %.2f).",
+                    target.x(), target.y());
+      } else if (request->lanterns_found >= target_lantern_count_ && has_entrance_pos_) {
+        desired_point = entrance_pos_;
+        RCLCPP_INFO(this->get_logger(),
+                    "All intersections traversed and %u lanterns found. Returning to entrance.",
+                    request->lanterns_found);
+      } else {
+        intersections_mru_.clear();
+        RCLCPP_WARN(this->get_logger(),
+                    "Topology memory reset: no pending branches and lantern target not yet reached (%u/%u).",
+                    request->lanterns_found, target_lantern_count_);
+      }
+    }
+  }
+
+  if (request->use_desired_point) {
+    desired_point = octomap::point3d(static_cast<float>(request->desired_point.x),
+                                     static_cast<float>(request->desired_point.y),
+                                     static_cast<float>(request->desired_point.z));
+  }
+
    // -----------------------------------------------------------------------
    // DAI-LITE SAMPLING PIPELINE
    // -----------------------------------------------------------------------
@@ -523,6 +616,12 @@ void ExplorationManager::handle_get_goal(
     cand.utility = evaluate_candidate(cand.position, drone_pos,
                                       effective_vertical_penalty_weight,
                                       forward_ref_xy);
+    if (desired_point) {
+      const double d_des = cand.position.distance(*desired_point);
+      const double d_cur = drone_pos.distance(*desired_point);
+      const double closeness_gain = std::clamp((d_cur - d_des) / std::max(1.0, d_cur), -1.0, 1.0);
+      cand.utility *= (1.0 + desired_point_weight_ * std::max(0.0, closeness_gain));
+    }
     num_evaluated++;
 
     if (cand.utility > best_utility) {
@@ -605,6 +704,15 @@ void ExplorationManager::handle_get_goal(
     RCLCPP_INFO(this->get_logger(), "Goal clamped to %.2fm step (was %.2fm)", max_step_distance_, dist_goal);
   }
 
+    if (at_intersection && !intersections_mru_.empty()) {
+    auto &current_intersection = intersections_mru_.front();
+    const double hx = goal_point.x - current_intersection.position.x();
+    const double hy = goal_point.y - current_intersection.position.y();
+    if (std::hypot(hx, hy) > 0.2) {
+      mark_branch_traversed(current_intersection, std::atan2(hy, hx));
+    }
+  }
+
   // Remember issued goal to discourage revisits in junction halls.
   recent_issued_goals_.emplace_back(static_cast<float>(goal_point.x),
                                     static_cast<float>(goal_point.y),
@@ -619,7 +727,7 @@ void ExplorationManager::handle_get_goal(
   response->goal.header.stamp = this->now();
   response->goal.pose.position = goal_point;
   response->goal.pose.orientation.w = 1.0;
-  response->message = "Dai-Lite goal found.";
+  response->message = desired_point ? "Dai-Lite goal found with strategic bias." : "Dai-Lite goal found.";
 
   // Update preferred heading for future branch commitment.
   // This helps avoid left-right oscillations at cave bifurcations.
@@ -655,6 +763,7 @@ void ExplorationManager::handle_get_goal(
 
   // Visualize
   publish_visualization(candidates, best_candidate, drone_x, drone_y, drone_z);
+  last_drone_pos_ = drone_pos;
 
   // Log Perf
   auto end_time = std::chrono::high_resolution_clock::now();
@@ -976,6 +1085,132 @@ bool ExplorationManager::is_too_close_to_obstacle(double x, double y, double z, 
   for(auto it = current_octomap_->begin_leafs_bbx(bbx_min, bbx_max); it != current_octomap_->end_leafs_bbx(); ++it) {
     if (current_octomap_->isNodeOccupied(*it)) {
       if (it.getCoordinate().distance(octomap::point3d(x,y,z)) < r) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+std::vector<double> ExplorationManager::detect_open_headings(
+    const octomap::point3d &origin, double sample_radius) const {
+  std::vector<double> headings;
+  if (!current_octomap_ || topology_num_rays_ < 8 || sample_radius <= 0.5) {
+    return headings;
+  }
+
+  std::vector<bool> open(static_cast<size_t>(topology_num_rays_), false);
+  for (int i = 0; i < topology_num_rays_; ++i) {
+    const double ang = (2.0 * std::acos(-1.0) * static_cast<double>(i)) /
+                       static_cast<double>(topology_num_rays_);
+    octomap::point3d dir(static_cast<float>(std::cos(ang)),
+                         static_cast<float>(std::sin(ang)), 0.0f);
+    octomap::point3d hit;
+    const bool hit_occ = current_octomap_->castRay(origin, dir, hit,
+                                                    true /*ignoreUnknown*/,
+                                                    sample_radius);
+    open[static_cast<size_t>(i)] = !hit_occ || origin.distance(hit) > sample_radius * topology_ray_occupancy_threshold_;
+  }
+
+  int i = 0;
+  while (i < topology_num_rays_) {
+    if (!open[static_cast<size_t>(i)]) { ++i; continue; }
+    int start = i;
+    while (i < topology_num_rays_ && open[static_cast<size_t>(i)]) { ++i; }
+    int end = i - 1;
+    const int mid = (start + end) / 2;
+    const double h = (2.0 * std::acos(-1.0) * static_cast<double>(mid)) / static_cast<double>(topology_num_rays_);
+    headings.push_back(std::atan2(std::sin(h), std::cos(h)));
+  }
+
+  if (!open.empty() && open.front() && open.back() && headings.size() >= 2) {
+    // merge wrap-around segments by replacing first heading with circular mean
+    const double a = headings.front();
+    const double b = headings.back();
+    headings.front() = std::atan2(std::sin(a) + std::sin(b), std::cos(a) + std::cos(b));
+    headings.pop_back();
+  }
+
+  return headings;
+}
+
+bool ExplorationManager::detect_intersection(const octomap::point3d &drone_pos,
+                                             std::vector<double> &branch_headings) const {
+  branch_headings = detect_open_headings(drone_pos, topology_probe_radius_);
+  return static_cast<int>(branch_headings.size()) >= min_intersection_branches_;
+}
+
+bool ExplorationManager::detect_dead_end(const octomap::point3d &drone_pos) const {
+  const auto headings = detect_open_headings(drone_pos, std::max(3.0, topology_probe_radius_ * 0.75));
+  return headings.size() <= 1;
+}
+
+int ExplorationManager::find_intersection_index(const octomap::point3d &position) const {
+  for (size_t i = 0; i < intersections_mru_.size(); ++i) {
+    if (intersections_mru_[i].position.distance(position) <= intersection_merge_radius_) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
+void ExplorationManager::mark_branch_traversed(IntersectionRecord &intersection,
+                                               double heading) {
+  int best_idx = -1;
+  double best_delta = std::numeric_limits<double>::max();
+  for (size_t i = 0; i < intersection.branches.size(); ++i) {
+    const double d = std::abs(std::atan2(std::sin(intersection.branches[i].heading - heading),
+                                         std::cos(intersection.branches[i].heading - heading)));
+    if (d < best_delta) {
+      best_delta = d;
+      best_idx = static_cast<int>(i);
+    }
+  }
+  if (best_idx >= 0) {
+    intersection.branches[static_cast<size_t>(best_idx)].traversed = true;
+  }
+}
+
+void ExplorationManager::upsert_intersection(const octomap::point3d &position,
+                                             const std::vector<double> &branch_headings,
+                                             const std::optional<double> &incoming_heading) {
+  int idx = find_intersection_index(position);
+  IntersectionRecord record;
+  if (idx >= 0) {
+    record = intersections_mru_[static_cast<size_t>(idx)];
+    intersections_mru_.erase(intersections_mru_.begin() + idx);
+  } else {
+    record.position = position;
+  }
+
+  record.position = position;
+  for (double heading : branch_headings) {
+    bool merged = false;
+    for (auto &existing : record.branches) {
+      const double d = std::abs(std::atan2(std::sin(existing.heading - heading),
+                                           std::cos(existing.heading - heading)));
+      if (d < branch_heading_merge_rad_) {
+        merged = true;
+        break;
+      }
+    }
+    if (!merged) {
+      record.branches.push_back({heading, false});
+    }
+  }
+
+  if (incoming_heading) {
+    mark_branch_traversed(record, *incoming_heading);
+  }
+
+  intersections_mru_.insert(intersections_mru_.begin(), record);
+}
+
+bool ExplorationManager::find_recent_intersection_with_untraversed(octomap::point3d &target) const {
+  for (const auto &intersection : intersections_mru_) {
+    for (const auto &branch : intersection.branches) {
+      if (!branch.traversed) {
+        target = intersection.position;
         return true;
       }
     }

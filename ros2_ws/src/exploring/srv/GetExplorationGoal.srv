@@ -1,4 +1,9 @@
-# Request (empty - no parameters needed)
+# Optional strategic bias from the mission manager
+bool use_desired_point
+geometry_msgs/Point desired_point
+
+# Number of unique lanterns currently detected by the mission manager
+uint32 lanterns_found
 ---
 # Response
 bool success

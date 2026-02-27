@@ -484,15 +484,6 @@ void MissionFsmNode::update_state() {
     break;
 
   case MissionState::EXPLORE:
-    // Check if we've found all lanterns
-    if (lanterns_found_count_ >= TARGET_LANTERN_COUNT) {
-      RCLCPP_INFO(this->get_logger(),
-                  "All %zu lanterns found! Mission complete.",
-                  TARGET_LANTERN_COUNT);
-      transition_to(MissionState::RETURN);
-      break;
-    }
-
     // Check if we've reached the current exploration goal
     if (goal_active_) {
       double dist = calculate_distance(current_pose_.position, current_goal_);
@@ -944,7 +935,10 @@ void MissionFsmNode::request_exploration_goal() {
 
   auto request =
       std::make_shared<exploring::srv::GetExplorationGoal::Request>();
-
+  request->use_desired_point = false;
+  request->desired_point = geometry_msgs::msg::Point();
+  request->lanterns_found = static_cast<uint32_t>(lanterns_found_count_);
+  
   // Set flag to prevent duplicate requests
   goal_request_pending_ = true;
 

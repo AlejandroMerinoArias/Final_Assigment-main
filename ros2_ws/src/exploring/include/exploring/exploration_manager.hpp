@@ -20,6 +20,7 @@
 #include "octomap_msgs/msg/octomap.hpp"
 
 #include <cmath>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -45,6 +46,16 @@ struct FrontierCandidate {
 struct FailedGoalRegion {
   octomap::point3d center;
   int hits = 1;
+};
+
+struct IntersectionBranch {
+  double heading = 0.0;
+  bool traversed = false;
+};
+
+struct IntersectionRecord {
+  octomap::point3d position;
+  std::vector<IntersectionBranch> branches;
 };
 
 /// Stuck mode classification for adaptive filter relaxation
@@ -164,6 +175,18 @@ private:
   std::optional<octomap::point3d>
   compute_forward_reference_xy(const octomap::point3d &drone_pos) const;
 
+  std::vector<double> detect_open_headings(const octomap::point3d &origin,
+                                           double sample_radius) const;
+  bool detect_intersection(const octomap::point3d &drone_pos,
+                           std::vector<double> &branch_headings) const;
+  bool detect_dead_end(const octomap::point3d &drone_pos) const;
+  int find_intersection_index(const octomap::point3d &position) const;
+  void upsert_intersection(const octomap::point3d &position,
+                           const std::vector<double> &branch_headings,
+                           const std::optional<double> &incoming_heading);
+  void mark_branch_traversed(IntersectionRecord &intersection,
+                             double heading);
+  bool find_recent_intersection_with_untraversed(octomap::point3d &target) const;
   // --- Test access ------------------------------------------------------
   friend class ExplorationManagerTest;
 
@@ -269,6 +292,19 @@ private:
   double failed_region_base_reject_radius_;
   double failed_region_reject_radius_gain_;
   int failed_region_max_hits_;
+
+  // --- Macro-topology guidance ------------------------------------------
+  std::vector<IntersectionRecord> intersections_mru_;
+  double intersection_merge_radius_;
+  int min_intersection_branches_;
+  double branch_heading_merge_rad_;
+  double topology_probe_radius_;
+  int topology_num_rays_;
+  double topology_ray_occupancy_threshold_;
+  std::optional<octomap::point3d> last_drone_pos_;
+  bool entrance_registered_as_dead_end_;
+  uint32_t target_lantern_count_;
+  double desired_point_weight_;
 };
 
 } // namespace planning
