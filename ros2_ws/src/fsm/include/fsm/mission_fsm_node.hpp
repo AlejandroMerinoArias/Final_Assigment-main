@@ -22,6 +22,7 @@
 
 #include "exploring/srv/get_exploration_goal.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -101,6 +102,8 @@ private:
   void publish_state();
   void publish_drone_marker();
   void start_refine_for_current_goal(const std::string &reason);
+  void build_z_retry_altitudes(double center_z);
+  bool try_activate_exploration_goal(const geometry_msgs::msg::Point &goal);
 
   // --- Subscribers ---
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
@@ -179,6 +182,8 @@ private:
   std::vector<double> z_retry_altitudes_;    // List of altitudes to try
   size_t z_retry_index_;                     // Current index in retry list
   geometry_msgs::msg::Point strategic_goal_; // The (x,y) we're trying to reach
+  int z_retry_max_attempts_ = 3;             // Max altitudes to try per strategic goal
+  double z_retry_step_ = 1.0;                // Altitude spacing between retries
 };
 
 } // namespace control

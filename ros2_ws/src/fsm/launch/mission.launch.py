@@ -128,6 +128,8 @@ def generate_launch_description():
             # Maximum number of consecutive failed exploration goal requests
             # before logging that goal selection appears stuck.
             {'explore_goal_selection_max_failures': 50},
+            {'z_retry_max_attempts': 3},
+            {'z_retry_step': 1.0},
         ],
     )
 
@@ -178,6 +180,8 @@ def generate_launch_description():
                 # Hard cap for each RRT* query. Prevents planner callback from
                 # blocking for long periods in cluttered areas.
                 "max_planning_time_sec": 1.5,
+                "allow_partial_paths": False,
+                "direct_path_max_distance": 25.0,
                 # Allow broader vertical sampling around target goals so
                 # RRT* can route through sloped cave sections.
                 "z_band": 3.5,
@@ -281,6 +285,10 @@ def generate_launch_description():
             {'cave_entrance_x': -320.0},      # Actual cave entrance X coordinate
             {'min_z': -10.0},                   # Minimum navigable altitude (m)
             {'max_z': 50.0},                  # Maximum navigable altitude (m)
+            {'failed_region_merge_radius': 3.0},
+            {'failed_region_base_reject_radius': 2.0},
+            {'failed_region_reject_radius_gain': 0.7},
+            {'failed_region_max_hits': 6},
         ],
     )
 

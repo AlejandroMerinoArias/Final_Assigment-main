@@ -30,7 +30,8 @@ public:
         robot_radius_(0.7),
         collision_check_resolution_(0.1), // NEW: explicit control over sampling
         local_box_size_(40.0), z_band_(1.5), step_size_(2.0), goal_radius_(3.0),
-        max_iterations_(2000), max_planning_time_sec_(1.5) {
+        max_iterations_(2000), max_planning_time_sec_(1.5),
+        allow_partial_paths_(false), direct_path_max_distance_(25.0) {
     robot_radius_ =
         this->declare_parameter<double>("robot_radius", robot_radius_);
     collision_check_resolution_ = this->declare_parameter<double>(
@@ -44,6 +45,10 @@ public:
         this->declare_parameter<int>("max_iterations", max_iterations_);
     max_planning_time_sec_ = this->declare_parameter<double>(
         "max_planning_time_sec", max_planning_time_sec_);
+    allow_partial_paths_ =
+        this->declare_parameter<bool>("allow_partial_paths", allow_partial_paths_);
+    direct_path_max_distance_ = this->declare_parameter<double>(
+        "direct_path_max_distance", direct_path_max_distance_);
 
     path_topic_ =
         this->declare_parameter<std::string>("path_topic", "waypoints");
@@ -82,9 +87,11 @@ public:
                 "GlobalPlannerNode initialized. robot_radius=%.2f m, "
                 "local_box_size=%.1f m, "
                 "z_band=%.1f m, step_size=%.1f m, goal_radius=%.1f m, "
-                "max_iterations=%d, max_planning_time_sec=%.2f",
+                "max_iterations=%d, max_planning_time_sec=%.2f, "
+                "allow_partial_paths=%s",
                 robot_radius_, local_box_size_, z_band_, step_size_,
-                goal_radius_, max_iterations_, max_planning_time_sec_);
+                goal_radius_, max_iterations_, max_planning_time_sec_,
+                allow_partial_paths_ ? "true" : "false");
   }
 
 private:
@@ -276,6 +283,29 @@ private:
     const double rewire_radius = std::max(3.0, 2.0 * step_size_);
     int goal_index = -1;
 
+    // Fast path: if the goal is nearby and line-of-sight collision-free,
+    // skip RRT* completely.
+    const double direct_dist = (goal - check_start).norm();
+    if (direct_dist <= direct_path_max_distance_ &&
+        isSegmentCollisionFree(check_start, goal)) {
+      out_path.poses.clear();
+      out_path.poses.reserve(2);
+      geometry_msgs::msg::PoseStamped start_pose;
+      start_pose.pose.position.x = check_start.x();
+      start_pose.pose.position.y = check_start.y();
+      start_pose.pose.position.z = check_start.z();
+      start_pose.pose.orientation.w = 1.0;
+      out_path.poses.push_back(start_pose);
+
+      geometry_msgs::msg::PoseStamped goal_pose;
+      goal_pose.pose.position.x = goal.x();
+      goal_pose.pose.position.y = goal.y();
+      goal_pose.pose.position.z = goal.z();
+      goal_pose.pose.orientation.w = 1.0;
+      out_path.poses.push_back(goal_pose);
+      return true;
+    }
+
     for (int iter = 0; iter < max_iterations_; ++iter) {
       const double elapsed_sec =
           std::chrono::duration<double>(std::chrono::steady_clock::now() -
@@ -349,7 +379,12 @@ private:
     }
 
     if (goal_index < 0) {
-      // Pick the node closest to goal as fallback.
+      if (!allow_partial_paths_) {
+        if (failure_reason) {
+          *failure_reason = "goal was not connected within planning budget";
+        }
+        return false;
+      }
       goal_index = findNearest(nodes, goal);
     }
 
@@ -564,6 +599,8 @@ private:
   double goal_radius_;
   int max_iterations_;
   double max_planning_time_sec_;
+  bool allow_partial_paths_;
+  double direct_path_max_distance_;
 
   std::string path_topic_;
   std::string goal_topic_;

@@ -34,7 +34,11 @@ ExplorationManager::ExplorationManager()
       branch_commitment_weight_(0.35), max_branch_bonus_(0.35),
       goal_history_max_size_(60), recent_goal_hard_reject_radius_(2.2),
       recent_goal_hard_reject_count_(12), revisit_penalty_radius_(4.5),
-      revisit_penalty_weight_(0.85) {
+      revisit_penalty_weight_(0.85),
+      failed_region_merge_radius_(3.0),
+      failed_region_base_reject_radius_(2.0),
+      failed_region_reject_radius_gain_(0.7),
+      failed_region_max_hits_(6) {
   // Declare and read parameters
   this->declare_parameter("min_frontier_size", min_frontier_size_);
   this->declare_parameter("blacklist_radius", blacklist_radius_);
@@ -65,6 +69,10 @@ ExplorationManager::ExplorationManager()
   this->declare_parameter("recent_goal_hard_reject_count", recent_goal_hard_reject_count_);
   this->declare_parameter("revisit_penalty_radius", revisit_penalty_radius_);
   this->declare_parameter("revisit_penalty_weight", revisit_penalty_weight_);
+  this->declare_parameter("failed_region_merge_radius", failed_region_merge_radius_);
+  this->declare_parameter("failed_region_base_reject_radius", failed_region_base_reject_radius_);
+  this->declare_parameter("failed_region_reject_radius_gain", failed_region_reject_radius_gain_);
+  this->declare_parameter("failed_region_max_hits", failed_region_max_hits_);
 
   min_frontier_size_ = this->get_parameter("min_frontier_size").as_int();
   blacklist_radius_ = this->get_parameter("blacklist_radius").as_double();
@@ -93,6 +101,10 @@ ExplorationManager::ExplorationManager()
   recent_goal_hard_reject_count_ = this->get_parameter("recent_goal_hard_reject_count").as_int();
   revisit_penalty_radius_ = this->get_parameter("revisit_penalty_radius").as_double();
   revisit_penalty_weight_ = this->get_parameter("revisit_penalty_weight").as_double();
+  failed_region_merge_radius_ = this->get_parameter("failed_region_merge_radius").as_double();
+  failed_region_base_reject_radius_ = this->get_parameter("failed_region_base_reject_radius").as_double();
+  failed_region_reject_radius_gain_ = this->get_parameter("failed_region_reject_radius_gain").as_double();
+  failed_region_max_hits_ = this->get_parameter("failed_region_max_hits").as_int();
   
   // Store base thresholds for stuck-mode relaxation
   base_min_goal_distance_ = min_goal_distance_;
@@ -114,7 +126,8 @@ ExplorationManager::ExplorationManager()
   RCLCPP_INFO(this->get_logger(), "  max_branch_bonus : %.2f", max_branch_bonus_);
   RCLCPP_INFO(this->get_logger(), "  recent_goal_hard_reject_radius : %.2f m", recent_goal_hard_reject_radius_);
   RCLCPP_INFO(this->get_logger(), "  revisit_penalty_radius : %.2f m", revisit_penalty_radius_);
-
+  RCLCPP_INFO(this->get_logger(), "  failed_region_base_reject_radius : %.2f m", failed_region_base_reject_radius_);
+  
   // TF
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
@@ -198,10 +211,29 @@ void ExplorationManager::blacklist_callback(
                       static_cast<float>(msg->point.y),
                       static_cast<float>(msg->point.z));
   blacklisted_goals_.push_back(pt);
+
+  bool merged = false;
+  for (auto &region : failed_goal_regions_) {
+    if (region.center.distance(pt) <= failed_region_merge_radius_) {
+      region.hits = std::min(failed_region_max_hits_, region.hits + 1);
+      const float alpha = 0.35f;
+      region.center = octomap::point3d(
+          (1.0f - alpha) * region.center.x() + alpha * pt.x(),
+          (1.0f - alpha) * region.center.y() + alpha * pt.y(),
+          (1.0f - alpha) * region.center.z() + alpha * pt.z());
+      merged = true;
+      break;
+    }
+  }
+  if (!merged) {
+    failed_goal_regions_.push_back(FailedGoalRegion{pt, 1});
+  }
+
   RCLCPP_INFO(
       this->get_logger(),
-      "Blacklisted goal received: (%.2f, %.2f, %.2f). Total blacklisted: %zu",
-      msg->point.x, msg->point.y, msg->point.z, blacklisted_goals_.size());
+      "Blacklisted goal received: (%.2f, %.2f, %.2f). Total blacklisted: %zu, failed regions: %zu",
+      msg->point.x, msg->point.y, msg->point.z, blacklisted_goals_.size(),
+      failed_goal_regions_.size());
 }
 
 // ===========================================================================
@@ -377,6 +409,12 @@ void ExplorationManager::handle_get_goal(
   int filt_blacklist = 0, filt_obstacle = 0, filt_distance = 0, filt_cave = 0, filt_los = 0, filt_recent = 0;
 
   for (auto &cand : candidates) {
+    // Filter: repeated-failure regions (expanded around goals that failed many times)
+    if (is_in_failed_region(cand.position)) {
+      ++filt_blacklist;
+      continue;
+    }
+
     // Filter: Blacklist (with dynamic radius)
     bool blacklisted = false;
     for (const auto &p : blacklisted_goals_) {
@@ -830,6 +868,22 @@ double ExplorationManager::compute_revisit_factor(const octomap::point3d &candid
   const double proximity = std::exp(-(min_dist * min_dist) / (2.0 * sigma * sigma));
   const double factor = 1.0 - revisit_penalty_weight_ * proximity;
   return std::clamp(factor, 0.05, 1.0);
+}
+
+bool ExplorationManager::is_in_failed_region(const octomap::point3d &candidate) const {
+  if (failed_goal_regions_.empty()) {
+    return false;
+  }
+
+  for (const auto &region : failed_goal_regions_) {
+    const double reject_radius = failed_region_base_reject_radius_ +
+                                 failed_region_reject_radius_gain_ *
+                                     static_cast<double>(std::max(0, region.hits - 1));
+    if (candidate.distance(region.center) < reject_radius) {
+      return true;
+    }
+  }
+  return false;
 }
 
 bool ExplorationManager::is_too_close_to_obstacle(double x, double y, double z) const {

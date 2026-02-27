@@ -42,6 +42,11 @@ struct FrontierCandidate {
   double utility = 0.0;
 };
 
+struct FailedGoalRegion {
+  octomap::point3d center;
+  int hits = 1;
+};
+
 /// Stuck mode classification for adaptive filter relaxation
 enum class StuckMode {
   NONE,       ///< Normal operation, no stuck detected
@@ -148,6 +153,9 @@ private:
   
   /// Reset stuck-mode statistics (called on successful goal selection)
   void resetStuckStats();
+  
+  /// Returns true if candidate lies inside a repeatedly failed region.
+  bool is_in_failed_region(const octomap::point3d &candidate) const;
 
   // --- Test access ------------------------------------------------------
   friend class ExplorationManagerTest;
@@ -175,6 +183,7 @@ private:
   std::shared_ptr<octomap::OcTree> current_octomap_;
   nav_msgs::msg::OccupancyGrid current_sliced_map_;
   std::vector<octomap::point3d> blacklisted_goals_;
+  std::vector<FailedGoalRegion> failed_goal_regions_;
 
   // Entrance / global reference for generic "forward into cave" bias.
   // Set to the drone pose when we receive the FIRST exploration goal request.
@@ -242,6 +251,12 @@ private:
   int recent_goal_hard_reject_count_;
   double revisit_penalty_radius_;
   double revisit_penalty_weight_;
+
+  // --- Failed-region memory (anti-looping after repeated planner failures) ---
+  double failed_region_merge_radius_;
+  double failed_region_base_reject_radius_;
+  double failed_region_reject_radius_gain_;
+  int failed_region_max_hits_;
 };
 
 } // namespace planning
