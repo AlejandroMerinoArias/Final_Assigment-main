@@ -336,15 +336,18 @@ void ExplorationManager::handle_get_goal(
     entrance_registered_as_dead_end_ = true;
   }
 
+  bool force_topology_goal = false;
   const bool dead_end = detect_dead_end(drone_pos);
+  if (dead_end) {
+    register_dead_end(drone_pos);
+  }
   if (dead_end && !intersections_mru_.empty()) {
-    octomap::point3d target;
-    if (find_recent_intersection_with_untraversed(target)) {
-      desired_point = target;
-      RCLCPP_INFO(this->get_logger(),
-                  "Dead-end detected. Biasing exploration back to intersection at (%.2f, %.2f).",
-                  target.x(), target.y());
-    }
+    const octomap::point3d target = intersections_mru_.front().position;
+    desired_point = target;
+    force_topology_goal = true;
+    RCLCPP_INFO(this->get_logger(),
+                "Dead-end detected. Returning to last visited intersection at (%.2f, %.2f).",
+                target.x(), target.y());
   }
 
   if (at_intersection && !intersections_mru_.empty()) {
@@ -360,11 +363,13 @@ void ExplorationManager::handle_get_goal(
       octomap::point3d target;
       if (find_recent_intersection_with_untraversed(target)) {
         desired_point = target;
+        force_topology_goal = true;
         RCLCPP_INFO(this->get_logger(),
                     "Intersection exhausted. Redirecting toward recent pending intersection (%.2f, %.2f).",
                     target.x(), target.y());
       } else if (request->lanterns_found >= target_lantern_count_ && has_entrance_pos_) {
         desired_point = entrance_pos_;
+        force_topology_goal = true;
         RCLCPP_INFO(this->get_logger(),
                     "All intersections traversed and %u lanterns found. Returning to entrance.",
                     request->lanterns_found);
@@ -381,6 +386,32 @@ void ExplorationManager::handle_get_goal(
     desired_point = octomap::point3d(static_cast<float>(request->desired_point.x),
                                      static_cast<float>(request->desired_point.y),
                                      static_cast<float>(request->desired_point.z));
+  }
+
+    if (force_topology_goal && desired_point) {
+    geometry_msgs::msg::Point goal_point;
+    goal_point.x = desired_point->x();
+    goal_point.y = desired_point->y();
+    goal_point.z = desired_point->z();
+
+    const double dist_goal = desired_point->distance(drone_pos);
+    if (max_step_distance_ > 0.0 && dist_goal > max_step_distance_) {
+      const double scale = max_step_distance_ / dist_goal;
+      goal_point.x = drone_x + (goal_point.x - drone_x) * scale;
+      goal_point.y = drone_y + (goal_point.y - drone_y) * scale;
+      goal_point.z = drone_z + (goal_point.z - drone_z) * scale;
+    }
+
+    response->success = true;
+    response->goal.header.frame_id = "world";
+    response->goal.header.stamp = this->now();
+    response->goal.pose.position = goal_point;
+    response->goal.pose.orientation.w = 1.0;
+    response->message = "Topology-directed return goal.";
+
+    publish_visualization({}, nullptr, drone_x, drone_y, drone_z);
+    last_drone_pos_ = drone_pos;
+    return;
   }
 
    // -----------------------------------------------------------------------
@@ -1141,8 +1172,59 @@ bool ExplorationManager::detect_intersection(const octomap::point3d &drone_pos,
 }
 
 bool ExplorationManager::detect_dead_end(const octomap::point3d &drone_pos) const {
-  const auto headings = detect_open_headings(drone_pos, std::max(3.0, topology_probe_radius_ * 0.75));
-  return headings.size() <= 1;
+  if (!current_octomap_ || topology_num_rays_ < 8) {
+    return false;
+  }
+
+  const double sample_radius = std::max(3.0, topology_probe_radius_ * 0.75);
+  std::vector<bool> open(static_cast<size_t>(topology_num_rays_), false);
+  int open_count = 0;
+
+  for (int i = 0; i < topology_num_rays_; ++i) {
+    const double ang = (2.0 * std::acos(-1.0) * static_cast<double>(i)) /
+                       static_cast<double>(topology_num_rays_);
+    octomap::point3d dir(static_cast<float>(std::cos(ang)),
+                         static_cast<float>(std::sin(ang)), 0.0f);
+    octomap::point3d hit;
+    const bool hit_occ = current_octomap_->castRay(drone_pos, dir, hit,
+                                                    true /*ignoreUnknown*/,
+                                                    sample_radius);
+    const bool ray_open = !hit_occ ||
+                          drone_pos.distance(hit) > sample_radius * topology_ray_occupancy_threshold_;
+    open[static_cast<size_t>(i)] = ray_open;
+    if (ray_open) {
+      ++open_count;
+    }
+  }
+
+  if (open_count == 0) {
+    return true;
+  }
+
+  const double open_fraction = static_cast<double>(open_count) /
+                               static_cast<double>(topology_num_rays_);
+  if (open_fraction > 0.70) {
+    return false;
+  }
+
+  int segments = 0;
+  for (int i = 0; i < topology_num_rays_; ++i) {
+    const int prev = (i - 1 + topology_num_rays_) % topology_num_rays_;
+    if (open[static_cast<size_t>(i)] && !open[static_cast<size_t>(prev)]) {
+      ++segments;
+    }
+  }
+
+  return segments <= 1;
+}
+
+void ExplorationManager::register_dead_end(const octomap::point3d &position) {
+  for (const auto &existing : dead_end_positions_) {
+    if (existing.distance(position) <= intersection_merge_radius_) {
+      return;
+    }
+  }
+  dead_end_positions_.push_back(position);
 }
 
 int ExplorationManager::find_intersection_index(const octomap::point3d &position) const {
@@ -1222,7 +1304,13 @@ void ExplorationManager::publish_visualization(const std::vector<FrontierCandida
                                                const FrontierCandidate *best,
                                                double drone_x, double drone_y, double drone_z) {
   visualization_msgs::msg::MarkerArray markers;
-  
+
+  visualization_msgs::msg::Marker clear_all;
+  clear_all.header.frame_id = "world";
+  clear_all.header.stamp = this->now();
+  clear_all.action = visualization_msgs::msg::Marker::DELETEALL;
+  markers.markers.push_back(clear_all);
+
   // 1. Candidates
   visualization_msgs::msg::Marker points;
   points.header.frame_id = "world";
@@ -1270,6 +1358,57 @@ void ExplorationManager::publish_visualization(const std::vector<FrontierCandida
     markers.markers.push_back(best_m);
   }
 
+  int marker_id = 100;
+  for (const auto &intersection : intersections_mru_) {
+    bool has_untraversed = false;
+    for (const auto &branch : intersection.branches) {
+      if (!branch.traversed) {
+        has_untraversed = true;
+        break;
+      }
+    }
+
+    visualization_msgs::msg::Marker intersection_marker;
+    intersection_marker.header = points.header;
+    intersection_marker.ns = "topology_intersections";
+    intersection_marker.id = marker_id++;
+    intersection_marker.type = visualization_msgs::msg::Marker::SPHERE;
+    intersection_marker.action = visualization_msgs::msg::Marker::ADD;
+    intersection_marker.scale.x = 2.0;
+    intersection_marker.scale.y = 2.0;
+    intersection_marker.scale.z = 2.0;
+    intersection_marker.color.a = 0.9;
+    intersection_marker.color.r = has_untraversed ? 1.0 : 0.0;
+    intersection_marker.color.g = has_untraversed ? 0.0 : 1.0;
+    intersection_marker.color.b = 0.0;
+    intersection_marker.pose.position.x = intersection.position.x();
+    intersection_marker.pose.position.y = intersection.position.y();
+    intersection_marker.pose.position.z = intersection.position.z();
+    intersection_marker.pose.orientation.w = 1.0;
+    markers.markers.push_back(intersection_marker);
+  }
+
+  for (const auto &dead_end : dead_end_positions_) {
+    visualization_msgs::msg::Marker dead_end_marker;
+    dead_end_marker.header = points.header;
+    dead_end_marker.ns = "topology_dead_ends";
+    dead_end_marker.id = marker_id++;
+    dead_end_marker.type = visualization_msgs::msg::Marker::SPHERE;
+    dead_end_marker.action = visualization_msgs::msg::Marker::ADD;
+    dead_end_marker.scale.x = 1.6;
+    dead_end_marker.scale.y = 1.6;
+    dead_end_marker.scale.z = 1.6;
+    dead_end_marker.color.a = 0.9;
+    dead_end_marker.color.r = 0.0;
+    dead_end_marker.color.g = 0.0;
+    dead_end_marker.color.b = 0.0;
+    dead_end_marker.pose.position.x = dead_end.x();
+    dead_end_marker.pose.position.y = dead_end.y();
+    dead_end_marker.pose.position.z = dead_end.z();
+    dead_end_marker.pose.orientation.w = 1.0;
+    markers.markers.push_back(dead_end_marker);
+  }
+  
   viz_pub_->publish(markers);
 }
 

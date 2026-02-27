@@ -226,6 +226,8 @@ Visualization Manager:
       Namespaces:
         best_goal: true
         candidates: true
+        topology_dead_ends: true
+        topology_intersections: true
       Topic:
         Depth: 5
         Durability Policy: Volatile

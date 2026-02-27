@@ -180,6 +180,7 @@ private:
   bool detect_intersection(const octomap::point3d &drone_pos,
                            std::vector<double> &branch_headings) const;
   bool detect_dead_end(const octomap::point3d &drone_pos) const;
+  void register_dead_end(const octomap::point3d &position);
   int find_intersection_index(const octomap::point3d &position) const;
   void upsert_intersection(const octomap::point3d &position,
                            const std::vector<double> &branch_headings,
@@ -295,6 +296,7 @@ private:
 
   // --- Macro-topology guidance ------------------------------------------
   std::vector<IntersectionRecord> intersections_mru_;
+  std::vector<octomap::point3d> dead_end_positions_;
   double intersection_merge_radius_;
   int min_intersection_branches_;
   double branch_heading_merge_rad_;
