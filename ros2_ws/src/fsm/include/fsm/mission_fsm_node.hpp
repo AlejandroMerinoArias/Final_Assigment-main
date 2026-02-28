@@ -125,11 +125,12 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr
       planner_goal_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr
+      planner_goal_pub_a_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr
       drone_marker_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr enable_mapping_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr blacklist_goal_pub_;
-
   // --- Timer ---
   rclcpp::TimerBase::SharedPtr timer_;
 
@@ -146,12 +147,13 @@ private:
   std::vector<geometry_msgs::msg::Pose> detected_lantern_poses_;
   size_t lanterns_found_count_;
   double lantern_dedup_threshold_; // meters
-  static constexpr size_t TARGET_LANTERN_COUNT = 4;
+  static constexpr size_t TARGET_LANTERN_COUNT = 3;
 
   // --- Mission parameters ---
   double takeoff_altitude_;
   geometry_msgs::msg::Point start_position_;
   geometry_msgs::msg::Point cave_entrance_;
+  std::string planner_type_;  // "RRT" or "A_star"
 
   // --- Goal tracking ---
   geometry_msgs::msg::Point current_goal_;

@@ -2,7 +2,8 @@
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
+from launch.conditions import IfCondition
 from launch_ros.actions import Node, ComposableNodeContainer
 from launch_ros.descriptions import ComposableNode
 from launch_ros.substitutions import FindPackageShare
@@ -17,6 +18,11 @@ def generate_launch_description():
     resolution_arg = DeclareLaunchArgument(
         'resolution', default_value='0.3',
         description='Size of the voxels in meters (0.3 = 30cm)'
+    )
+
+    planner_type_arg = DeclareLaunchArgument(
+        'planner_type', default_value='A_star',
+        description='Type of global planner to use: A_star or RRT'
     )
 
     # RViz config file
@@ -128,6 +134,9 @@ def generate_launch_description():
             # Maximum number of consecutive failed exploration goal requests
             # before logging that goal selection appears stuck.
             {'explore_goal_selection_max_failures': 50},
+            
+            # Planner type
+            {'planner_type': LaunchConfiguration('planner_type')},
             {'z_retry_max_attempts': 3},
             {'z_retry_step': 1.0},
         ],
@@ -157,6 +166,7 @@ def generate_launch_description():
     # 5b. Global Planner Node (planner goal -> waypoints path)
     # =================================================================
     global_planner_node = Node(
+        condition=IfCondition(PythonExpression(["'", LaunchConfiguration('planner_type'), "' == 'RRT'"])),
         package="planning",
         executable="global_planner_node",
         name="global_planner_node",
@@ -185,6 +195,32 @@ def generate_launch_description():
                 # Allow broader vertical sampling around target goals so
                 # RRT* can route through sloped cave sections.
                 "z_band": 3.5,
+            }
+        ],
+    )
+
+    global_planner_node_a = Node(
+        condition=IfCondition(PythonExpression(["'", LaunchConfiguration('planner_type'), "' == 'A_star'"])),
+        package="planning",
+        executable="global_planner_node_a",
+        name="global_planner_node_a",
+        output="screen",
+        parameters=[
+            {
+                "path_topic": "waypoints",
+                "goal_topic": "/planner_a/goal",
+                "odom_topic": "/current_state_est",
+                "octomap_topic": "/octomap_binary",
+                # Safety / inflation parameters
+                # Effective collision radius of the robot in meters.
+                # This is the PRIMARY collision avoidance parameter — it controls
+                # how close the planned flight path can get to walls/obstacles.
+                # Increase this if the drone is still colliding with walls.
+                "robot_radius": 0.7,
+                # Collision check sampling resolution (meters)
+                # Smaller = safer but slower. Should be << robot_radius.
+                # Default 0.1m provides good safety/performance balance.
+                "collision_check_resolution": 0.1,
             }
         ],
     )
@@ -269,7 +305,7 @@ def generate_launch_description():
             # Dai-Lite Sampling Parameters
             {'num_candidates': 20},           # Random samples per request
             {'downsample_grid': 1.0},         # Spatial spreading grid (m)
-            {'frontier_search_radius': 10.0}, # BBX radius for frontier detection (m)
+            {'frontier_search_radius': 20.0}, # BBX radius for frontier detection (m)
             
             # Scoring & Constraints
             {'drone_speed': 2.0},             # For travel time estimation (m/s)
@@ -302,6 +338,7 @@ def generate_launch_description():
     return LaunchDescription([
         # Arguments
         resolution_arg,
+        planner_type_arg,
         # Lantern detection
         lantern_detector_node,
         lantern_logger_node,
@@ -316,6 +353,7 @@ def generate_launch_description():
         fsm_node,
         trajectory_generation_node,
         global_planner_node,
+        global_planner_node_a,
         lantern_marker_node,
         exploration_manager_node,
         rviz_node,

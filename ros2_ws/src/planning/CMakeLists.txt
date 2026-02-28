@@ -47,9 +47,39 @@ ament_target_dependencies(global_planner_node
   Eigen3
 )
 
+# Astar
+
+add_executable(global_planner_node_a
+  src/global_planner_node_a.cpp
+)
+
+target_include_directories(global_planner_node_a
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+    ${OCTOMAP_INCLUDE_DIRS}
+    ${EIGEN3_INCLUDE_DIRS}
+)
+
+# ADDED: Link libraries for A*
+target_link_libraries(global_planner_node_a
+  ${OCTOMAP_LIBRARIES}
+)
+
+ament_target_dependencies(global_planner_node_a
+  rclcpp
+  nav_msgs
+  geometry_msgs
+  std_msgs
+  octomap
+  octomap_msgs
+  Eigen3
+)
+
 # Install executable
 install(TARGETS
   global_planner_node
+  global_planner_node_a
   DESTINATION lib/${PROJECT_NAME}
 )
 

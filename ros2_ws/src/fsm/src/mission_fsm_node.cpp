@@ -36,6 +36,10 @@ MissionFsmNode::MissionFsmNode()
   z_retry_max_attempts_ = this->get_parameter("z_retry_max_attempts").as_int();
   this->declare_parameter("z_retry_step", z_retry_step_);
   z_retry_step_ = this->get_parameter("z_retry_step").as_double();
+  
+  // Declare and read planner type parameter (default: RRT)
+  this->declare_parameter("planner_type", "A_star");
+  planner_type_ = this->get_parameter("planner_type").as_string();
 
   // Cave entrance - Main entrance
   cave_entrance_.x = -320.0;
@@ -92,6 +96,9 @@ MissionFsmNode::MissionFsmNode()
 
   planner_goal_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(
       "/planner/goal", 10);
+  // Publisher for A* planner
+  planner_goal_pub_a_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(
+      "/planner_a/goal", 10);
 
   drone_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>(
       "/fsm/drone_marker", 10);
@@ -298,7 +305,13 @@ void MissionFsmNode::exploration_goal_callback(
   goal_set_time_ = this->now();
   last_pose_at_goal_set_ = current_pose_.position;
 
-  planner_goal_pub_->publish(planner_goal);
+  if (planner_type_ == "RRT") {
+    planner_goal_pub_->publish(planner_goal);
+    
+  } else {
+    planner_goal_pub_a_->publish(planner_goal);
+    
+  }
   goal_active_ = true;
 
   RCLCPP_INFO(this->get_logger(),
@@ -411,7 +424,11 @@ void MissionFsmNode::on_state_enter(MissionState state) {
         return_goal_msg.pose.position.z = takeoff_altitude_; // Maintain altitude for return
         return_goal_msg.pose.orientation.w = 1.0;
         
-        planner_goal_pub_->publish(return_goal_msg);
+        if (planner_type_ == "A_star") {
+          planner_goal_pub_a_->publish(return_goal_msg);
+        } else {
+          planner_goal_pub_->publish(return_goal_msg);
+        }
         
         current_goal_.x = start_position_.x;
         current_goal_.y = start_position_.y;
@@ -614,7 +631,11 @@ void MissionFsmNode::update_state() {
         goal_set_time_ = this->now();
         last_pose_at_goal_set_ = current_pose_.position;
 
-        planner_goal_pub_->publish(goal_msg);
+        if (planner_type_ == "A_star") {
+          planner_goal_pub_a_->publish(goal_msg);
+        } else {
+          planner_goal_pub_->publish(goal_msg);
+        }
         goal_active_ = true;
         z_retry_index_++;
       } else {
@@ -918,7 +939,11 @@ bool MissionFsmNode::try_activate_exploration_goal(const geometry_msgs::msg::Poi
   goal_set_time_ = this->now();
   last_pose_at_goal_set_ = current_pose_.position;
 
-  planner_goal_pub_->publish(planner_goal);
+  if (planner_type_ == "A_star") {
+    planner_goal_pub_a_->publish(planner_goal);
+  } else {
+    planner_goal_pub_->publish(planner_goal);
+  }
   goal_active_ = true;
 
   RCLCPP_INFO(
