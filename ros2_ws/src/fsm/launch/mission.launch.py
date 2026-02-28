@@ -291,6 +291,10 @@ def generate_launch_description():
             {'failed_region_max_hits': 6},
             {'backtrack_reject_distance': 2.5},
             {'backtrack_penalty_factor': 0.55},
+            {'unknown_volume_weight': 0.35},
+            {'unknown_volume_radius': 3.5},
+            {'unknown_sample_step_multiplier': 2.0},
+            {'unknown_min_cave_depth_margin': 0.5},
             {'heading_update_alpha': 0.35},
         ],
     )

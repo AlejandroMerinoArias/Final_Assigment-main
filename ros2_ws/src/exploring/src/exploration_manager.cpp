@@ -37,6 +37,10 @@ ExplorationManager::ExplorationManager()
       revisit_penalty_weight_(0.85),
       backtrack_reject_distance_(2.5),
       backtrack_penalty_factor_(0.55),
+      unknown_volume_weight_(0.35),
+      unknown_volume_radius_(3.5),
+      unknown_sample_step_multiplier_(2.0),
+      unknown_min_cave_depth_margin_(0.5),
       heading_update_alpha_(0.35),
       failed_region_merge_radius_(3.0),
       failed_region_base_reject_radius_(2.0),
@@ -74,6 +78,10 @@ ExplorationManager::ExplorationManager()
   this->declare_parameter("revisit_penalty_weight", revisit_penalty_weight_);
   this->declare_parameter("backtrack_reject_distance", backtrack_reject_distance_);
   this->declare_parameter("backtrack_penalty_factor", backtrack_penalty_factor_);
+  this->declare_parameter("unknown_volume_weight", unknown_volume_weight_);
+  this->declare_parameter("unknown_volume_radius", unknown_volume_radius_);
+  this->declare_parameter("unknown_sample_step_multiplier", unknown_sample_step_multiplier_);
+  this->declare_parameter("unknown_min_cave_depth_margin", unknown_min_cave_depth_margin_);
   this->declare_parameter("heading_update_alpha", heading_update_alpha_);
   this->declare_parameter("failed_region_merge_radius", failed_region_merge_radius_);
   this->declare_parameter("failed_region_base_reject_radius", failed_region_base_reject_radius_);
@@ -109,6 +117,10 @@ ExplorationManager::ExplorationManager()
   revisit_penalty_weight_ = this->get_parameter("revisit_penalty_weight").as_double();
   backtrack_reject_distance_ = this->get_parameter("backtrack_reject_distance").as_double();
   backtrack_penalty_factor_ = this->get_parameter("backtrack_penalty_factor").as_double();
+  unknown_volume_weight_ = this->get_parameter("unknown_volume_weight").as_double();
+  unknown_volume_radius_ = this->get_parameter("unknown_volume_radius").as_double();
+  unknown_sample_step_multiplier_ = this->get_parameter("unknown_sample_step_multiplier").as_double();
+  unknown_min_cave_depth_margin_ = this->get_parameter("unknown_min_cave_depth_margin").as_double();
   heading_update_alpha_ = this->get_parameter("heading_update_alpha").as_double();
   failed_region_merge_radius_ = this->get_parameter("failed_region_merge_radius").as_double();
   failed_region_base_reject_radius_ = this->get_parameter("failed_region_base_reject_radius").as_double();
@@ -136,7 +148,10 @@ ExplorationManager::ExplorationManager()
   RCLCPP_INFO(this->get_logger(), "  recent_goal_hard_reject_radius : %.2f m", recent_goal_hard_reject_radius_);
   RCLCPP_INFO(this->get_logger(), "  revisit_penalty_radius : %.2f m", revisit_penalty_radius_);
   RCLCPP_INFO(this->get_logger(), "  backtrack_reject_distance : %.2f m", backtrack_reject_distance_);
-  RCLCPP_INFO(this->get_logger(), "  backtrack_reject_distance : %.2f m", backtrack_reject_distance_);
+  RCLCPP_INFO(this->get_logger(), "  unknown_volume_weight : %.2f", unknown_volume_weight_);
+  RCLCPP_INFO(this->get_logger(), "  unknown_volume_radius : %.2f m", unknown_volume_radius_);
+  RCLCPP_INFO(this->get_logger(), "  unknown_sample_step_multiplier : %.2f", unknown_sample_step_multiplier_);
+  RCLCPP_INFO(this->get_logger(), "  unknown_min_cave_depth_margin : %.2f m", unknown_min_cave_depth_margin_);
   
   // TF
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
@@ -897,8 +912,77 @@ double ExplorationManager::evaluate_candidate(
   // Novelty term: reduce utility near recently issued goals to avoid loops
   // around bifurcation halls where frontiers stay partially visible.
   utility *= compute_revisit_factor(candidate);
+
+  // Unknown-volume bonus: reward candidates that can reveal nearby unknown
+  // space, but only when both the candidate and counted samples are strictly
+  // inside the cave-side gate.
+  if (unknown_volume_weight_ > 0.0) {
+    const double unknown_ratio = compute_local_unknown_ratio(candidate);
+    utility *= (1.0 + unknown_volume_weight_ * unknown_ratio);
+  }
   
   return utility;
+}
+
+double ExplorationManager::compute_local_unknown_ratio(
+    const octomap::point3d &candidate) const {
+  if (!current_octomap_ || unknown_volume_radius_ <= 0.0) {
+    return 0.0;
+  }
+
+  // Strict gate: never add unknown bonus near/outside entrance.
+  const double strict_cave_gate_x =
+      cave_entrance_x_ - std::max(0.0, unknown_min_cave_depth_margin_);
+  if (candidate.x() > strict_cave_gate_x) {
+    return 0.0;
+  }
+
+  const double res = current_octomap_->getResolution();
+  if (res <= 0.0) {
+    return 0.0;
+  }
+  const double step =
+      std::max(res, res * std::max(1.0, unknown_sample_step_multiplier_));
+  const double r = unknown_volume_radius_;
+
+  int samples_in_sphere = 0;
+  int unknown_samples = 0;
+
+  for (double dx = -r; dx <= r; dx += step) {
+    for (double dy = -r; dy <= r; dy += step) {
+      for (double dz = -r; dz <= r; dz += step) {
+        const double d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 > r * r) {
+          continue;
+        }
+
+        const double sx = candidate.x() + dx;
+        if (sx > strict_cave_gate_x) {
+          continue;
+        }
+
+        const double sy = candidate.y() + dy;
+        const double sz = candidate.z() + dz;
+        if (sz < min_z_ || sz > max_z_) {
+          continue;
+        }
+
+        ++samples_in_sphere;
+        octomap::point3d sample_point(sx, sy, sz);
+        if (!current_octomap_->search(sample_point)) {
+          ++unknown_samples;
+        }
+      }
+    }
+  }
+
+  if (samples_in_sphere == 0) {
+    return 0.0;
+  }
+
+  const double ratio = static_cast<double>(unknown_samples) /
+                       static_cast<double>(samples_in_sphere);
+  return std::clamp(ratio, 0.0, 1.0);
 }
 
 std::optional<octomap::point3d>

@@ -111,6 +111,11 @@ private:
                             const octomap::point3d &drone_pos,
                             double vertical_penalty_weight,
                             const std::optional<octomap::point3d> &forward_ref_xy) const;
+  
+  /// Estimate normalized unknown ratio in a local spherical neighborhood around
+  /// a candidate. Uses strict cave gating so unknown voxels outside the cave
+  /// entrance are never rewarded.
+  double compute_local_unknown_ratio(const octomap::point3d &candidate) const;
 
    /// Compute novelty factor in (0,1] based on distance to recent goals.
   double compute_revisit_factor(const octomap::point3d &candidate) const;
@@ -260,6 +265,12 @@ private:
   double revisit_penalty_weight_;
   double backtrack_reject_distance_;
   double backtrack_penalty_factor_;
+  
+  // --- Unknown-volume utility bonus -------------------------------------
+  double unknown_volume_weight_;
+  double unknown_volume_radius_;
+  double unknown_sample_step_multiplier_;
+  double unknown_min_cave_depth_margin_;
 
   // --- Heading update smoothing ------------------------------------------
   double heading_update_alpha_;
