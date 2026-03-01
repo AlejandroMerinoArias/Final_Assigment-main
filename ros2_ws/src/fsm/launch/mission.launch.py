@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, ExecuteProcess
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch.conditions import IfCondition
+import datetime
 from launch_ros.actions import Node, ComposableNodeContainer
 from launch_ros.descriptions import ComposableNode
 from launch_ros.substitutions import FindPackageShare
@@ -15,6 +16,16 @@ def generate_launch_description():
     # =================================================================
     # Launch Arguments
     # =================================================================
+    bag_filename_arg = DeclareLaunchArgument(
+        'bag_filename', default_value='mission_run',
+        description='Base name for the ROS bag folder'
+    )
+
+    record_bag_arg = DeclareLaunchArgument(
+        'record_bag', default_value='false',
+        description='Set to true to enable ROS bag recording.'
+    )
+
     resolution_arg = DeclareLaunchArgument(
         'resolution', default_value='0.3',
         description='Size of the voxels in meters (0.3 = 30cm)'
@@ -23,6 +34,11 @@ def generate_launch_description():
     planner_type_arg = DeclareLaunchArgument(
         'planner_type', default_value='RRT',
         description='Type of global planner to use: A_star or RRT'
+    )
+
+    takeoff_altitude_arg = DeclareLaunchArgument(
+        'takeoff_altitude', default_value='5.0',
+        description='Altitude in metres to ascend above start position during takeoff'
     )
 
     # RViz config file
@@ -134,9 +150,12 @@ def generate_launch_description():
             # Maximum number of consecutive failed exploration goal requests
             # before logging that goal selection appears stuck.
             {'explore_goal_selection_max_failures': 50},
-            
+
             # Planner type
             {'planner_type': LaunchConfiguration('planner_type')},
+
+            # Takeoff altitude (metres above start position)
+            {'takeoff_altitude': LaunchConfiguration('takeoff_altitude')},
             {'z_retry_max_attempts': 3},
             {'z_retry_step': 1.0},
         ],
@@ -333,12 +352,53 @@ def generate_launch_description():
 
 
     # =================================================================
+    # 9. Data Recording (rosbag2)
+    # =================================================================
+    topics_to_record = [
+        '/fsm/state',
+        '/current_state_est',
+        '/current_state',        # Ground truth state from simulation
+        '/pose_est',             # Raw pose estimate
+        '/twist_est',            # Raw twist estimate
+        '/detected_lanterns',
+        '/command/trajectory',   # Final trajectory command sent to drone
+        '/waypoints',            # Output path from global planner
+        '/fsm/waypoint_path',    # Intermediate path from FSM 
+        '/planner/status',
+        '/planner/goal',         # Goal sent to RRT planner
+        '/planner_a/goal',       # Goal sent to A* planner
+        '/exploration/goal',     # Global goal from frontier exploration
+        '/exploration/blacklist_goal', # Blacklisted goals from stuck state
+        '/fsm/cancel',           # FSM trajectory cancel command
+        '/exploration/map_ready',
+        '/enable_mapping',
+        '/camera/depth/points_world',
+        '/octomap_binary',
+        '/lantern_marker',
+        '/fsm/drone_marker',
+        '/exploration/frontiers_viz',
+        '/rotor_speed_cmds'
+    ]
+
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    rosbag_record_process = ExecuteProcess(
+        condition=IfCondition(LaunchConfiguration('record_bag')),
+        cmd=['ros2', 'bag', 'record', '-o', ['rosbags/', LaunchConfiguration('bag_filename'), f'_{timestamp}'], '--storage', 'sqlite3'] + topics_to_record,
+        name='rosbag_record_process',
+        output='screen'
+    )
+
+    # =================================================================
     # Launch Description
     # =================================================================
     return LaunchDescription([
         # Arguments
+        bag_filename_arg,
+        record_bag_arg,
         resolution_arg,
         planner_type_arg,
+        takeoff_altitude_arg,
         # Lantern detection
         lantern_detector_node,
         lantern_logger_node,
@@ -357,4 +417,5 @@ def generate_launch_description():
         lantern_marker_node,
         exploration_manager_node,
         rviz_node,
+        rosbag_record_process,
     ])

@@ -41,7 +41,7 @@ ExplorationManager::ExplorationManager()
       failed_region_merge_radius_(3.0),
       failed_region_base_reject_radius_(2.0),
       failed_region_reject_radius_gain_(0.7),
-      failed_region_max_hits_(6), blacklist_max_size_(50) {
+      failed_region_max_hits_(6) {
   // Declare and read parameters
   this->declare_parameter("min_frontier_size", min_frontier_size_);
   this->declare_parameter("blacklist_radius", blacklist_radius_);
@@ -79,7 +79,6 @@ ExplorationManager::ExplorationManager()
   this->declare_parameter("failed_region_base_reject_radius", failed_region_base_reject_radius_);
   this->declare_parameter("failed_region_reject_radius_gain", failed_region_reject_radius_gain_);
   this->declare_parameter("failed_region_max_hits", failed_region_max_hits_);
-  this->declare_parameter("blacklist_max_size", blacklist_max_size_);
 
   min_frontier_size_ = this->get_parameter("min_frontier_size").as_int();
   blacklist_radius_ = this->get_parameter("blacklist_radius").as_double();
@@ -115,7 +114,6 @@ ExplorationManager::ExplorationManager()
   failed_region_base_reject_radius_ = this->get_parameter("failed_region_base_reject_radius").as_double();
   failed_region_reject_radius_gain_ = this->get_parameter("failed_region_reject_radius_gain").as_double();
   failed_region_max_hits_ = this->get_parameter("failed_region_max_hits").as_int();
-  blacklist_max_size_ = this->get_parameter("blacklist_max_size").as_int();
   
   // Store base thresholds for stuck-mode relaxation
   base_min_goal_distance_ = min_goal_distance_;
@@ -139,7 +137,7 @@ ExplorationManager::ExplorationManager()
   RCLCPP_INFO(this->get_logger(), "  revisit_penalty_radius : %.2f m", revisit_penalty_radius_);
   RCLCPP_INFO(this->get_logger(), "  backtrack_reject_distance : %.2f m", backtrack_reject_distance_);
   RCLCPP_INFO(this->get_logger(), "  backtrack_reject_distance : %.2f m", backtrack_reject_distance_);
-
+  
   // TF
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
@@ -222,10 +220,6 @@ void ExplorationManager::blacklist_callback(
   octomap::point3d pt(static_cast<float>(msg->point.x),
                       static_cast<float>(msg->point.y),
                       static_cast<float>(msg->point.z));
-  if (blacklist_max_size_ > 0 &&
-      static_cast<int>(blacklisted_goals_.size()) >= blacklist_max_size_) {
-    blacklisted_goals_.pop_front();
-  }
   blacklisted_goals_.push_back(pt);
 
   bool merged = false;
@@ -247,9 +241,9 @@ void ExplorationManager::blacklist_callback(
 
   RCLCPP_INFO(
       this->get_logger(),
-      "Blacklisted goal received: (%.2f, %.2f, %.2f). Blacklist size: %zu/%d, failed regions: %zu",
+      "Blacklisted goal received: (%.2f, %.2f, %.2f). Total blacklisted: %zu, failed regions: %zu",
       msg->point.x, msg->point.y, msg->point.z, blacklisted_goals_.size(),
-      blacklist_max_size_, failed_goal_regions_.size());
+      failed_goal_regions_.size());
 }
 
 // ===========================================================================
@@ -314,24 +308,6 @@ void ExplorationManager::handle_get_goal(
   // 2. Downsample to grid
   auto downsampled = voxel_grid_downsample(frontiers, downsample_grid_);
   size_t num_downsampled = downsampled.size();
-
-  // 2.5. Compute local visual forward vector from frontier centroid (XY only).
-  std::optional<octomap::point3d> visual_ref_xy = std::nullopt;
-  if (!downsampled.empty()) {
-    octomap::point3d centroid(0.0f, 0.0f, 0.0f);
-    for (const auto &pt : downsampled) {
-      centroid += pt;
-    }
-    centroid /= static_cast<float>(downsampled.size());
-    const double vx = centroid.x() - drone_pos.x();
-    const double vy = centroid.y() - drone_pos.y();
-    const double n = std::hypot(vx, vy);
-    if (n > 1e-3) {
-      visual_ref_xy = octomap::point3d(static_cast<float>(vx / n),
-                                       static_cast<float>(vy / n),
-                                       0.0f);
-    }
-  }
 
   // 3. Random sample candidates (Adaptive Scaling)
   // Increase candidates linearly with consecutive failures to brute-force through clutter
@@ -437,7 +413,7 @@ void ExplorationManager::handle_get_goal(
   }
 
   // 4. Evaluate candidates
-  const auto forward_ref_xy = compute_forward_reference_xy(drone_pos, visual_ref_xy);
+  const auto forward_ref_xy = compute_forward_reference_xy(drone_pos);
   double best_utility = -1.0;
   FrontierCandidate *best_candidate = nullptr;
   int num_evaluated = 0;
@@ -618,6 +594,7 @@ void ExplorationManager::handle_get_goal(
   } else if (goal_point.z < drone_z - max_z_delta) {
     goal_point.z = drone_z - max_z_delta;
   }
+
   // Enforce Max Step Distance
   double dist_goal = best_candidate->position.distance(drone_pos);
   if (max_step_distance_ > 0.0 && dist_goal > max_step_distance_) {
@@ -636,14 +613,13 @@ void ExplorationManager::handle_get_goal(
          static_cast<int>(recent_issued_goals_.size()) > goal_history_max_size_) {
     recent_issued_goals_.pop_front();
   }
+
   response->success = true;
   response->goal.header.frame_id = "world";
   response->goal.header.stamp = this->now();
   response->goal.pose.position = goal_point;
   response->goal.pose.orientation.w = 1.0;
   response->message = "Dai-Lite goal found.";
-
-
 
   // Update preferred heading for future branch commitment.
   // This helps avoid left-right oscillations at cave bifurcations.
@@ -874,7 +850,7 @@ double ExplorationManager::evaluate_candidate(
   const double dz_for_penalty =
       std::max(0.0, std::abs(dz) - vertical_penalty_deadband_);
   double z_penalty = 1.0 + vertical_penalty_weight * dz_for_penalty;
-
+  
   double effective_time = time * z_penalty;
 
   // Base utility = 1 / time
@@ -921,56 +897,34 @@ double ExplorationManager::evaluate_candidate(
   // Novelty term: reduce utility near recently issued goals to avoid loops
   // around bifurcation halls where frontiers stay partially visible.
   utility *= compute_revisit_factor(candidate);
-
+  
   return utility;
 }
 
 std::optional<octomap::point3d>
 ExplorationManager::compute_forward_reference_xy(
-    const octomap::point3d &drone_pos,
-    const std::optional<octomap::point3d> &visual_ref_xy) const {
-  std::optional<octomap::point3d> expansion_ref_xy = std::nullopt;
-
+    const octomap::point3d &drone_pos) const {
   if (preferred_heading_xy_) {
     const double n = std::hypot(preferred_heading_xy_->x(), preferred_heading_xy_->y());
     if (n > 1e-3) {
-      expansion_ref_xy = octomap::point3d(static_cast<float>(preferred_heading_xy_->x() / n),
-                                          static_cast<float>(preferred_heading_xy_->y() / n),
-                                          0.0f);
-    }
-  }
-
-  if (!expansion_ref_xy && has_entrance_pos_) {
-    const double ex = drone_pos.x() - entrance_pos_.x();
-    const double ey = drone_pos.y() - entrance_pos_.y();
-    const double n = std::hypot(ex, ey);
-    if (n > 1e-3) {
-      expansion_ref_xy = octomap::point3d(static_cast<float>(ex / n),
-                                          static_cast<float>(ey / n),
-                                          0.0f);
-    }
-  }
-
-  if (visual_ref_xy && expansion_ref_xy) {
-    constexpr double kVisualWeight = 0.7;
-    constexpr double kExpansionWeight = 0.3;
-    const double bx = kVisualWeight * visual_ref_xy->x() +
-                      kExpansionWeight * expansion_ref_xy->x();
-    const double by = kVisualWeight * visual_ref_xy->y() +
-                      kExpansionWeight * expansion_ref_xy->y();
-    const double bn = std::hypot(bx, by);
-    if (bn > 1e-3) {
-      return octomap::point3d(static_cast<float>(bx / bn),
-                              static_cast<float>(by / bn),
+      return octomap::point3d(static_cast<float>(preferred_heading_xy_->x() / n),
+                              static_cast<float>(preferred_heading_xy_->y() / n),
                               0.0f);
     }
   }
 
-  if (visual_ref_xy) {
-    return visual_ref_xy;
+  if (has_entrance_pos_) {
+    const double ex = drone_pos.x() - entrance_pos_.x();
+    const double ey = drone_pos.y() - entrance_pos_.y();
+    const double n = std::hypot(ex, ey);
+    if (n > 1e-3) {
+      return octomap::point3d(static_cast<float>(ex / n),
+                              static_cast<float>(ey / n),
+                              0.0f);
+    }
   }
 
-  return expansion_ref_xy;
+  return std::nullopt;
 }
 
 double ExplorationManager::compute_revisit_factor(const octomap::point3d &candidate) const {

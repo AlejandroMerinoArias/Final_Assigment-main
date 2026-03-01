@@ -101,7 +101,6 @@ private:
       const std::vector<geometry_msgs::msg::Point> &waypoints);
   void publish_state();
   void publish_drone_marker();
-
   /// Re-send the current active goal to the planner so it recomputes the path
   /// from the drone's current position (mid-flight replanning).
   void replan_current_goal();
@@ -171,7 +170,6 @@ private:
   static constexpr double MIN_PROGRESS_THRESHOLD = 0.5; // meters - minimum progress toward goal before warning
   static constexpr int MAX_CONSECUTIVE_TOO_CLOSE_REJECTIONS = 3; // Accept goal after this many rejections
   int consecutive_too_close_rejections_; // Counter for consecutive "too close" rejections
-
 
   // --- Mid-flight replanning ---
   rclcpp::Time last_replan_time_;   ///< When the last replan was issued

@@ -10,7 +10,8 @@ MissionFsmNode::MissionFsmNode()
       takeoff_altitude_(2.0), z_retry_index_(0),
       goal_set_time_(this->now()), min_exploration_goal_distance_(2.0),
       consecutive_too_close_rejections_(0),
-      last_successful_exploration_goal_time_(this->now()) {
+      last_successful_exploration_goal_time_(this->now()),
+      last_replan_time_(this->now()) {
   // Initialize positions
   start_position_.x = 0.0;
   start_position_.y = 0.0;
@@ -32,19 +33,22 @@ MissionFsmNode::MissionFsmNode()
   this->declare_parameter("explore_goal_selection_max_failures", explore_goal_selection_max_failures_);
   explore_goal_selection_max_failures_ =
       this->get_parameter("explore_goal_selection_max_failures").as_int();
+
+  // Mid-flight replanning interval (seconds)
+  this->declare_parameter("replan_interval_s", replan_interval_s_);
+  replan_interval_s_ = this->get_parameter("replan_interval_s").as_double();
   this->declare_parameter("z_retry_max_attempts", z_retry_max_attempts_);
   z_retry_max_attempts_ = this->get_parameter("z_retry_max_attempts").as_int();
   this->declare_parameter("z_retry_step", z_retry_step_);
   z_retry_step_ = this->get_parameter("z_retry_step").as_double();
   
-
-  // Mid-flight replanning interval (seconds)
-  this->declare_parameter("replan_interval_s", replan_interval_s_);
-  replan_interval_s_ = this->get_parameter("replan_interval_s").as_double();
-
   // Declare and read planner type parameter (default: RRT)
   this->declare_parameter("planner_type", "A_star");
   planner_type_ = this->get_parameter("planner_type").as_string();
+
+  // Takeoff altitude: how many metres above start position to ascend
+  this->declare_parameter("takeoff_altitude", takeoff_altitude_);
+  takeoff_altitude_ = this->get_parameter("takeoff_altitude").as_double();
 
   // Cave entrance - Main entrance
   cave_entrance_.x = -320.0;
@@ -361,7 +365,7 @@ void MissionFsmNode::on_state_enter(MissionState state) {
       double target_x = current_pose_.position.x;
       double target_y = current_pose_.position.y;
       double target_z =
-          current_pose_.position.z + 5.0; // Ascend 5m relative to start
+          current_pose_.position.z + takeoff_altitude_; // Ascend takeoff_altitude_ m relative to start
 
       RCLCPP_INFO(this->get_logger(),
                   "Takeoff Target (current_state_est): [%.2f, %.2f, %.2f]",
@@ -529,21 +533,6 @@ void MissionFsmNode::update_state() {
                     dist, time_since_goal_set);
         goal_active_ = false;
         consecutive_too_close_rejections_ = 0;  // Reset counter on successful goal completion
-
-        // Breadcrumb blacklist: publish the reached goal so the exploration
-        // manager won't re-select this area. This prevents the dynamic
-        // forward-vector from pulling the drone back to visited regions.
-        {
-          geometry_msgs::msg::PointStamped breadcrumb_msg;
-          breadcrumb_msg.header.stamp = this->now();
-          breadcrumb_msg.header.frame_id = "world";
-          breadcrumb_msg.point = current_goal_;
-          blacklist_goal_pub_->publish(breadcrumb_msg);
-          RCLCPP_INFO(this->get_logger(),
-                      "Breadcrumb blacklisted reached goal [%.2f, %.2f, %.2f] "
-                      "to prevent backtracking.",
-                      current_goal_.x, current_goal_.y, current_goal_.z);
-        }
         // Loop will trigger new request in next block
       }
       // SECOND: Check for goal timeout - if goal takes too long, abandon it
@@ -619,7 +608,6 @@ void MissionFsmNode::update_state() {
 
     // Mid-flight replanning: every replan_interval_s_ seconds while flying
     // toward a goal, ask the planner to recompute from the current position.
-    // This keeps the path fresh as the drone moves and the map updates.
     if (goal_active_) {
       double time_since_replan = (this->now() - last_replan_time_).seconds();
       if (time_since_replan >= replan_interval_s_) {
@@ -722,13 +710,13 @@ void MissionFsmNode::update_state() {
           goal_active_ = false;
         }
       }
+    }
 
-      // Mid-flight replanning for REFINE_GOAL state too
-      if (goal_active_) {
-        double time_since_replan = (this->now() - last_replan_time_).seconds();
-        if (time_since_replan >= replan_interval_s_) {
-          replan_current_goal();
-        }
+    // Mid-flight replanning for REFINE_GOAL state
+    if (goal_active_) {
+      double time_since_replan = (this->now() - last_replan_time_).seconds();
+      if (time_since_replan >= replan_interval_s_) {
+        replan_current_goal();
       }
     }
     break;
@@ -855,7 +843,7 @@ void MissionFsmNode::publish_waypoint_path(
 
 void MissionFsmNode::replan_current_goal() {
   // Republish the current goal to the planner so it recomputes the path
-  // from the drone's present position.  The trajectory generator will
+  // from the drone's present position. The trajectory generator will
   // seamlessly replace the old trajectory with the new one.
   geometry_msgs::msg::PoseStamped replan_goal;
   replan_goal.header.stamp = this->now();

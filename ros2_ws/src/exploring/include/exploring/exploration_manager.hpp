@@ -154,7 +154,7 @@ private:
   
   /// Reset stuck-mode statistics (called on successful goal selection)
   void resetStuckStats();
-
+  
   /// Returns true if candidate lies inside a repeatedly failed region.
   bool is_in_failed_region(const octomap::point3d &candidate) const;
   
@@ -162,8 +162,7 @@ private:
   /// Priority: preferred heading from recent successful goals, then
   /// entrance->drone direction. Returns nullopt if no stable direction exists.
   std::optional<octomap::point3d>
-  compute_forward_reference_xy(const octomap::point3d &drone_pos,
-                             const std::optional<octomap::point3d> &visual_ref_xy) const;
+  compute_forward_reference_xy(const octomap::point3d &drone_pos) const;
 
   // --- Test access ------------------------------------------------------
   friend class ExplorationManagerTest;
@@ -190,7 +189,7 @@ private:
 
   std::shared_ptr<octomap::OcTree> current_octomap_;
   nav_msgs::msg::OccupancyGrid current_sliced_map_;
-  std::deque<octomap::point3d> blacklisted_goals_;
+  std::vector<octomap::point3d> blacklisted_goals_;
   std::vector<FailedGoalRegion> failed_goal_regions_;
 
   // Entrance / global reference for generic "forward into cave" bias.
@@ -270,7 +269,6 @@ private:
   double failed_region_base_reject_radius_;
   double failed_region_reject_radius_gain_;
   int failed_region_max_hits_;
-  int blacklist_max_size_;        ///< Sliding-window cap for the blacklist (default 50)
 };
 
 } // namespace planning

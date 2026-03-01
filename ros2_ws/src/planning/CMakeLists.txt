@@ -24,8 +24,6 @@ add_executable(global_planner_node
   src/global_planner_node.cpp
 )
 
-
-
 target_include_directories(global_planner_node
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -48,7 +46,6 @@ ament_target_dependencies(global_planner_node
   octomap_msgs
   Eigen3
 )
-
 
 # Astar
 
@@ -78,7 +75,6 @@ ament_target_dependencies(global_planner_node_a
   octomap_msgs
   Eigen3
 )
-
 
 # Install executable
 install(TARGETS
