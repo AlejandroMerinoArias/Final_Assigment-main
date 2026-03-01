@@ -1,0 +1,6 @@
+# Request (empty - no parameters needed)
+---
+# Response
+bool success
+string message
+geometry_msgs/PoseStamped goal

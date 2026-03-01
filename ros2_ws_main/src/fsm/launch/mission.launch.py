@@ -1,0 +1,400 @@
+#!/usr/bin/env python3
+
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument, ExecuteProcess
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
+from launch.conditions import IfCondition
+import datetime
+from launch_ros.actions import Node, ComposableNodeContainer
+from launch_ros.descriptions import ComposableNode
+from launch_ros.substitutions import FindPackageShare
+
+
+def generate_launch_description():
+    """Launch the mission components: Perception pipeline, Mapping, FSM, and RViz."""
+
+    # =================================================================
+    # Launch Arguments
+    # =================================================================
+    bag_filename_arg = DeclareLaunchArgument(
+        'bag_filename', default_value='mission_run',
+        description='Base name for the ROS bag folder'
+    )
+
+    record_bag_arg = DeclareLaunchArgument(
+        'record_bag', default_value='false',
+        description='Set to true to enable ROS bag recording.'
+    )
+
+    resolution_arg = DeclareLaunchArgument(
+        'resolution', default_value='0.3',
+        description='Size of the voxels in meters (0.3 = 30cm)'
+    )
+
+    planner_type_arg = DeclareLaunchArgument(
+        'planner_type', default_value='A_star',
+        description='Type of global planner to use: A_star or RRT'
+    )
+
+    takeoff_altitude_arg = DeclareLaunchArgument(
+        'takeoff_altitude', default_value='5.0',
+        description='Altitude in metres to ascend above start position during takeoff'
+    )
+
+    # RViz config file
+    rviz_config = PathJoinSubstitution([
+        FindPackageShare("fsm"), "mission.rviz"
+    ])
+
+    # =================================================================
+    # 1. Depth to PointCloud (from depth_to_cloud.launch.py)
+    # =================================================================
+    depth_processing_node = ComposableNode(
+        package='depth_image_proc',
+        plugin='depth_image_proc::PointCloudXyzNode',
+        name='point_cloud_xyz_node',
+        remappings=[
+            ('image_rect', '/realsense/depth/image'),
+            ('camera_info', '/realsense/depth/camera_info'),
+            ('points', '/camera/depth/points')
+        ]
+    )
+
+    depth_container = ComposableNodeContainer(
+        name='depth_image_proc_container',
+        namespace='',
+        package='rclcpp_components',
+        executable='component_container',
+        composable_node_descriptions=[depth_processing_node],
+        output='screen'
+    )
+
+    # =================================================================
+    # 2. PointCloud Transformer (from pointcloud_transformer.launch.py)
+    # =================================================================
+    # Static TF: Connect 'true_body' to the camera frame
+    body_to_camera_tf = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='body_to_camera_tf',
+        arguments=['0.1', '0', '0', '-1.5708', '0', '-1.5708', 'body', 'Quadrotor/Sensors/DepthCamera']
+    )
+
+    # C++ PointCloud Transformer: transforms points to 'world' frame
+    pointcloud_transformer_node = Node(
+        package='perception',
+        executable='pointcloud_transformer_node',
+        name='pcl_transformer',
+        output='screen',
+        parameters=[{
+            'target_frame': 'world'
+        }],
+        remappings=[
+            ('input', '/camera/depth/points'),
+            ('output', '/camera/depth/points_world')
+        ]
+    )
+
+    # =================================================================
+    # 3. Cloud Gate (only forwards point clouds when mapping is enabled)
+    # =================================================================
+    cloud_gate_node = Node(
+        package='mapping_pkg',
+        executable='cloud_gate',
+        name='cloud_gate',
+        output='screen',
+    )
+
+    # =================================================================
+    # 4. OctoMap Server (receives gated point clouds)
+    # =================================================================
+    octomap_node = Node(
+        package='octomap_server',
+        executable='octomap_server_node',
+        name='octomap_server',
+        output='screen',
+        parameters=[{
+            'resolution': LaunchConfiguration('resolution'),
+            'frame_id': 'world',
+            'use_sim_time': True,
+            'sensor_model/max_range': 5.0,
+            'latch': True,
+            'filter_ground': False,
+            'base_frame_id': 'body',
+            'qos_overrides./cloud_in.subscription.reliability': 'best_effort'
+        }],
+        remappings=[
+            ('cloud_in', '/gated_cloud'),
+            ('octomap_binary', '/octomap_binary'),
+            ('occupied_cells_vis_array', '/occupied_cells_vis_array')
+        ]
+    )
+
+    # =================================================================
+    # 4. Mission FSM Node
+    # =================================================================
+    fsm_node = Node(
+        package='fsm',
+        executable='mission_fsm_node',
+        name='mission_fsm_node',
+        output='screen',
+        parameters=[
+            # Minimum distance for exploration goals (meters)
+            # Goals closer than this will be rejected to avoid tiny steps
+            {'min_exploration_goal_distance': 3.0},
+            # Goal-selection watchdog configuration
+            # If we have not activated a new exploration goal for this many
+            # seconds, consider goal selection \"stuck\" (logs only, keeps exploring).
+            {'explore_goal_selection_timeout': 60.0},
+            # Maximum number of consecutive failed exploration goal requests
+            # before logging that goal selection appears stuck.
+            {'explore_goal_selection_max_failures': 50},
+
+            # Planner type
+            {'planner_type': LaunchConfiguration('planner_type')},
+
+            # Takeoff altitude (metres above start position)
+            {'takeoff_altitude': LaunchConfiguration('takeoff_altitude')},
+        ],
+    )
+
+    # =================================================================
+    # 5. Trajectory Generation Node (waypoints -> command/trajectory)
+    # =================================================================
+    trajectory_config = PathJoinSubstitution([
+        FindPackageShare("trajectory_generation"),
+        "config",
+        "trajectory_config.yaml"
+    ])
+
+    trajectory_generation_node = Node(
+        package="trajectory_generation",
+        executable="trajectory_generation_node",
+        name="trajectory_generation",
+        output="screen",
+        parameters=[trajectory_config],
+        remappings=[
+            ("odom", "/current_state_est"),
+        ],
+    )
+
+    # =================================================================
+    # 5b. Global Planner Node (planner goal -> waypoints path)
+    # =================================================================
+    global_planner_node = Node(
+        condition=IfCondition(PythonExpression(["'", LaunchConfiguration('planner_type'), "' == 'RRT'"])),
+        package="planning",
+        executable="global_planner_node",
+        name="global_planner_node",
+        output="screen",
+        parameters=[
+            {
+                "path_topic": "waypoints",
+                "goal_topic": "/planner/goal",
+                "odom_topic": "/current_state_est",
+                "octomap_topic": "/octomap_binary",
+                # Safety / inflation parameters
+                # Effective collision radius of the robot in meters.
+                # This is the PRIMARY collision avoidance parameter — it controls
+                # how close the planned flight path can get to walls/obstacles.
+                # Increase this if the drone is still colliding with walls.
+                "robot_radius": 0.6,
+                # Collision check sampling resolution (meters)
+                # Smaller = safer but slower. Should be << robot_radius.
+                # Default 0.1m provides good safety/performance balance.
+                "collision_check_resolution": 0.2,
+            }
+        ],
+    )
+    
+    
+    global_planner_node_a = Node(
+        condition=IfCondition(PythonExpression(["'", LaunchConfiguration('planner_type'), "' == 'A_star'"])),
+        package="planning",
+        executable="global_planner_node_a",
+        name="global_planner_node_a",
+        output="screen",
+        parameters=[
+            {
+                "path_topic": "waypoints",
+                "goal_topic": "/planner_a/goal",
+                "odom_topic": "/current_state_est",
+                "octomap_topic": "/octomap_binary",
+                # Safety / inflation parameters
+                # Effective collision radius of the robot in meters.
+                # This is the PRIMARY collision avoidance parameter — it controls
+                # how close the planned flight path can get to walls/obstacles.
+                # Increase this if the drone is still colliding with walls.
+                "robot_radius": 0.7,
+                # Collision check sampling resolution (meters)
+                # Smaller = safer but slower. Should be << robot_radius.
+                # Default 0.1m provides good safety/performance balance.
+                "collision_check_resolution": 0.1,
+            }
+        ],
+    )
+
+    # =================================================================
+    # 6. RViz2 for Visualization
+    # =================================================================
+    rviz_node = Node(
+        package='rviz2',
+        executable='rviz2',
+        name='rviz2',
+        output='screen',
+        arguments=['-d', rviz_config],
+    )
+
+    # =================================================================
+    # 7. Lantern Detector
+    # =================================================================
+    lantern_detector_node = Node(
+        package="perception",
+        executable="lantern_detector",
+        name="lantern_detector",
+        output="screen",
+        parameters=[
+            {
+                "semantic_topic": "/realsense/semantic/image_rect_raw",
+                "depth_topic": "/realsense/depth/image",
+                "camera_info_topic": "/realsense/semantic/camera_info",
+                "world_frame": "world",
+                "body_frame": "body",
+                "camera_offset": [0.1, 0.0, 0.0],
+                "min_area": 5.0,
+                "depth_window_scale": 0.5,
+                "hsv_lower": [20, 70, 70],
+                "hsv_upper": [70, 255, 255],
+                "gating_distance": 2.0,
+                "min_observations": 5,
+            }
+        ],
+    )
+
+    lantern_logger_node = Node(
+        package="perception",
+        executable="lantern_detection_logger",
+        name="lantern_detection_logger",
+        output="screen",
+        parameters=[
+            {
+                "detections_topic": "/detected_lanterns",
+                "output_file": "lantern_detections.txt",
+            }
+        ],
+    )
+
+    lantern_marker_node = Node(
+        package="perception",
+        executable="lantern_marker",
+        name="lantern_marker",
+        output="screen",
+        parameters=[
+            {
+                "detections_topic": "/detected_lanterns",
+                "marker_topic": "/lantern_marker",
+                "sphere_diameter": 0.3,
+            }
+        ],
+    )
+
+    # =================================================================
+    # 8. Exploration Manager (frontier-based exploration)
+    # =================================================================
+    exploration_manager_node = Node(
+        package='exploring',
+        executable='exploration_manager',
+        name='exploration_manager',
+        output='screen',
+        parameters=[
+            {'min_frontier_size': 5},
+            {'update_rate_hz': 4.0}, # Faster update rate for sampling (lightweight)
+            
+            # Dai-Lite Sampling Parameters
+            {'num_candidates': 20},           # Random samples per request
+            {'downsample_grid': 1.0},         # Spatial spreading grid (m)
+            {'frontier_search_radius': 10.0}, # BBX radius for frontier detection (m)
+            
+            # Scoring & Constraints
+            {'drone_speed': 2.0},             # For travel time estimation (m/s)
+            {'vertical_penalty_weight': 2.0}, # Penalty for altitude changes
+            {'min_goal_distance': 5.0},       # Reject frontiers too close to drone (m)
+            {'max_step_distance': 30.0},      # Max goal distance from drone (m)
+            
+            # Safety
+            {'exploration_inflation_radius': 0.6},  # Goal selection only — planner's robot_radius handles path safety
+            {'cave_entrance_x': -320.0},      # Actual cave entrance X coordinate
+            {'min_z': -10.0},                   # Minimum navigable altitude (m)
+            {'max_z': 50.0},                  # Maximum navigable altitude (m)
+        ],
+    )
+
+
+    # =================================================================
+    # 9. Data Recording (rosbag2)
+    # =================================================================
+    topics_to_record = [
+        '/fsm/state',
+        '/current_state_est',
+        '/current_state',        # Ground truth state from simulation
+        '/pose_est',             # Raw pose estimate
+        '/twist_est',            # Raw twist estimate
+        '/detected_lanterns',
+        '/command/trajectory',   # Final trajectory command sent to drone
+        '/waypoints',            # Output path from global planner
+        '/fsm/waypoint_path',    # Intermediate path from FSM 
+        '/planner/status',
+        '/planner/goal',         # Goal sent to RRT planner
+        '/planner_a/goal',       # Goal sent to A* planner
+        '/exploration/goal',     # Global goal from frontier exploration
+        '/exploration/blacklist_goal', # Blacklisted goals from stuck state
+        '/fsm/cancel',           # FSM trajectory cancel command
+        '/exploration/map_ready',
+        '/enable_mapping',
+        '/camera/depth/points_world',
+        '/octomap_binary',
+        '/lantern_marker',
+        '/fsm/drone_marker',
+        '/exploration/frontiers_viz',
+        '/rotor_speed_cmds'
+    ]
+
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    rosbag_record_process = ExecuteProcess(
+        condition=IfCondition(LaunchConfiguration('record_bag')),
+        cmd=['ros2', 'bag', 'record', '-o', ['rosbags/', LaunchConfiguration('bag_filename'), f'_{timestamp}'], '--storage', 'sqlite3'] + topics_to_record,
+        name='rosbag_record_process',
+        output='screen'
+    )
+
+    # =================================================================
+    # Launch Description
+    # =================================================================
+    return LaunchDescription([
+        # Arguments
+        bag_filename_arg,
+        record_bag_arg,
+        resolution_arg,
+        planner_type_arg,
+        takeoff_altitude_arg,
+        # Lantern detection
+        lantern_detector_node,
+        lantern_logger_node,
+        # Perception pipeline
+        depth_container,
+        body_to_camera_tf,
+        pointcloud_transformer_node,
+        # Mapping
+        cloud_gate_node,
+        octomap_node,
+        # FSM & Visualization
+        fsm_node,
+        trajectory_generation_node,
+        global_planner_node,
+        global_planner_node_a,
+        lantern_marker_node,
+        exploration_manager_node,
+        rviz_node,
+        rosbag_record_process,
+    ])
