@@ -22,6 +22,7 @@
 
 #include "exploring/srv/get_exploration_goal.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -100,9 +101,13 @@ private:
       const std::vector<geometry_msgs::msg::Point> &waypoints);
   void publish_state();
   void publish_drone_marker();
+
   /// Re-send the current active goal to the planner so it recomputes the path
   /// from the drone's current position (mid-flight replanning).
   void replan_current_goal();
+  void start_refine_for_current_goal(const std::string &reason);
+  void build_z_retry_altitudes(double center_z);
+  bool try_activate_exploration_goal(const geometry_msgs::msg::Point &goal);
 
   // --- Subscribers ---
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
@@ -130,7 +135,6 @@ private:
       drone_marker_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr enable_mapping_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr blacklist_goal_pub_;
-
   // --- Timer ---
   rclcpp::TimerBase::SharedPtr timer_;
 
@@ -146,8 +150,8 @@ private:
   // --- Lantern tracking ---
   std::vector<geometry_msgs::msg::Pose> detected_lantern_poses_;
   size_t lanterns_found_count_;
-  static constexpr double LANTERN_DEDUP_THRESHOLD = 2.0; // meters
-  static constexpr size_t TARGET_LANTERN_COUNT = 4;
+  double lantern_dedup_threshold_; // meters
+  static constexpr size_t TARGET_LANTERN_COUNT = 3;
 
   // --- Mission parameters ---
   double takeoff_altitude_;
@@ -162,9 +166,12 @@ private:
   static constexpr double GOAL_REACHED_THRESHOLD = 1.5; // meters - increased from 0.5m for more lenient goal completion
   double min_exploration_goal_distance_; // meters - minimum distance for new goals (configurable)
   static constexpr double GOAL_TIMEOUT_SECONDS = 30.0; // seconds - timeout for goal completion
+  static constexpr double STUCK_DETECTION_SECONDS = 10.0; // seconds before checking for stuck behavior
   static constexpr double MIN_MOVEMENT_THRESHOLD = 0.5; // meters - minimum movement to consider progress
+  static constexpr double MIN_PROGRESS_THRESHOLD = 0.5; // meters - minimum progress toward goal before warning
   static constexpr int MAX_CONSECUTIVE_TOO_CLOSE_REJECTIONS = 3; // Accept goal after this many rejections
   int consecutive_too_close_rejections_; // Counter for consecutive "too close" rejections
+
 
   // --- Mid-flight replanning ---
   rclcpp::Time last_replan_time_;   ///< When the last replan was issued
@@ -186,6 +193,8 @@ private:
   std::vector<double> z_retry_altitudes_;    // List of altitudes to try
   size_t z_retry_index_;                     // Current index in retry list
   geometry_msgs::msg::Point strategic_goal_; // The (x,y) we're trying to reach
+  int z_retry_max_attempts_ = 3;             // Max altitudes to try per strategic goal
+  double z_retry_step_ = 1.0;                // Altitude spacing between retries
 };
 
 } // namespace control

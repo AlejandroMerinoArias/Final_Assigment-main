@@ -6,11 +6,11 @@ MissionFsmNode::MissionFsmNode()
     : Node("mission_fsm_node"), current_state_(MissionState::INIT),
       pose_received_(false), mission_start_signal_received_(false),
       goal_active_(false), goal_request_pending_(false),
-      lanterns_found_count_(0), takeoff_altitude_(5.0), z_retry_index_(0),
+      lanterns_found_count_(0), lantern_dedup_threshold_(2.5),
+      takeoff_altitude_(2.0), z_retry_index_(0),
       goal_set_time_(this->now()), min_exploration_goal_distance_(2.0),
       consecutive_too_close_rejections_(0),
-      last_successful_exploration_goal_time_(this->now()),
-      last_replan_time_(this->now()) {
+      last_successful_exploration_goal_time_(this->now()) {
   // Initialize positions
   start_position_.x = 0.0;
   start_position_.y = 0.0;
@@ -22,6 +22,8 @@ MissionFsmNode::MissionFsmNode()
   last_pose_at_goal_set_.z = 0.0;
   
   // Declare and read parameters
+  this->declare_parameter("lantern_dedup_threshold", lantern_dedup_threshold_);
+  lantern_dedup_threshold_ = this->get_parameter("lantern_dedup_threshold").as_double();
   this->declare_parameter("min_exploration_goal_distance", min_exploration_goal_distance_);
   min_exploration_goal_distance_ = this->get_parameter("min_exploration_goal_distance").as_double();
   this->declare_parameter("explore_goal_selection_timeout", explore_goal_selection_timeout_);
@@ -30,6 +32,11 @@ MissionFsmNode::MissionFsmNode()
   this->declare_parameter("explore_goal_selection_max_failures", explore_goal_selection_max_failures_);
   explore_goal_selection_max_failures_ =
       this->get_parameter("explore_goal_selection_max_failures").as_int();
+  this->declare_parameter("z_retry_max_attempts", z_retry_max_attempts_);
+  z_retry_max_attempts_ = this->get_parameter("z_retry_max_attempts").as_int();
+  this->declare_parameter("z_retry_step", z_retry_step_);
+  z_retry_step_ = this->get_parameter("z_retry_step").as_double();
+  
 
   // Mid-flight replanning interval (seconds)
   this->declare_parameter("replan_interval_s", replan_interval_s_);
@@ -38,10 +45,6 @@ MissionFsmNode::MissionFsmNode()
   // Declare and read planner type parameter (default: RRT)
   this->declare_parameter("planner_type", "A_star");
   planner_type_ = this->get_parameter("planner_type").as_string();
-
-  // Takeoff altitude: how many metres above start position to ascend
-  this->declare_parameter("takeoff_altitude", takeoff_altitude_);
-  takeoff_altitude_ = this->get_parameter("takeoff_altitude").as_double();
 
   // Cave entrance - Main entrance
   cave_entrance_.x = -320.0;
@@ -98,8 +101,8 @@ MissionFsmNode::MissionFsmNode()
 
   planner_goal_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(
       "/planner/goal", 10);
-    // Publisher for A* planner
-    planner_goal_pub_a_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(
+  // Publisher for A* planner
+  planner_goal_pub_a_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(
       "/planner_a/goal", 10);
 
   drone_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>(
@@ -170,7 +173,7 @@ void MissionFsmNode::lantern_callback(
                 existing_pose.position.x, existing_pose.position.y, existing_pose.position.z,
                 dist);
 
-    if (dist < LANTERN_DEDUP_THRESHOLD) {
+    if (dist <= lantern_dedup_threshold_) {
       is_new = false;
       break;
     }
@@ -358,7 +361,7 @@ void MissionFsmNode::on_state_enter(MissionState state) {
       double target_x = current_pose_.position.x;
       double target_y = current_pose_.position.y;
       double target_z =
-          current_pose_.position.z + takeoff_altitude_; // Ascend takeoff_altitude_ m relative to start
+          current_pose_.position.z + 5.0; // Ascend 5m relative to start
 
       RCLCPP_INFO(this->get_logger(),
                   "Takeoff Target (current_state_est): [%.2f, %.2f, %.2f]",
@@ -547,16 +550,16 @@ void MissionFsmNode::update_state() {
       else if (time_since_goal_set > GOAL_TIMEOUT_SECONDS) {
         RCLCPP_WARN(this->get_logger(),
                     "Exploration goal timeout (%.1f s > %.1f s). "
-                    "Abandoning goal [%.2f, %.2f, %.2f] "
-                    "(current distance=%.2f m, threshold=%.2f m). Requesting new one.",
+                    "Switching to recovery for goal [%.2f, %.2f, %.2f] "
+                    "(current distance=%.2f m, threshold=%.2f m).",
                     time_since_goal_set, GOAL_TIMEOUT_SECONDS,
                     current_goal_.x, current_goal_.y, current_goal_.z,
                     dist, GOAL_REACHED_THRESHOLD);
-        goal_active_ = false;
-        // Will trigger new request in next block
+        start_refine_for_current_goal("goal timeout");
+        break;
       }
       // THIRD: Check if drone is stuck (not making progress toward goal)
-      else if (time_since_goal_set > 10.0) {  // After 10 seconds, check movement
+      else if (time_since_goal_set > STUCK_DETECTION_SECONDS) {  // After 10 seconds, check movement
         double movement_since_goal = calculate_distance(
             current_pose_.position, last_pose_at_goal_set_);
         double progress_toward_goal = calculate_distance(
@@ -567,12 +570,13 @@ void MissionFsmNode::update_state() {
           RCLCPP_WARN(this->get_logger(),
                       "Drone appears stuck (moved only %.2f m in %.1f s, "
                       "distance to goal=%.2f m). "
-                      "Abandoning goal [%.2f, %.2f, %.2f] and requesting new one.",
+                      "Switching to recovery for goal [%.2f, %.2f, %.2f].",
                       movement_since_goal, time_since_goal_set, dist,
                       current_goal_.x, current_goal_.y, current_goal_.z);
-          goal_active_ = false;
-          // Will trigger new request in next block
-        } else if (progress_toward_goal < 0.5 && dist > GOAL_REACHED_THRESHOLD * 2.0) {
+          start_refine_for_current_goal("stuck with low movement");
+          break;
+        } else if (progress_toward_goal < MIN_PROGRESS_THRESHOLD &&
+                   dist > GOAL_REACHED_THRESHOLD * 2.0) {
           // Making movement but not toward goal (might be going around obstacle)
           // Only warn if we're still far from goal
           RCLCPP_DEBUG(this->get_logger(),
@@ -703,8 +707,20 @@ void MissionFsmNode::update_state() {
                     "Refined goal timeout (%.1f s). "
                     "Abandoning altitude %.2f m. Trying next option.",
                     time_since_goal_set, current_goal_.z);
+        cancel_pub_->publish(std_msgs::msg::Empty());
         goal_active_ = false;
         // Next loop iteration will trigger next Z-retry
+      } else if (time_since_goal_set > STUCK_DETECTION_SECONDS) {
+        double movement_since_goal =
+            calculate_distance(current_pose_.position, last_pose_at_goal_set_);
+        if (movement_since_goal < MIN_MOVEMENT_THRESHOLD) {
+          RCLCPP_WARN(this->get_logger(),
+                      "Refine goal stalled at altitude %.2f m (moved only %.2f m "
+                      "in %.1f s). Trying next altitude.",
+                      current_goal_.z, movement_since_goal, time_since_goal_set);
+          cancel_pub_->publish(std_msgs::msg::Empty());
+          goal_active_ = false;
+        }
       }
 
       // Mid-flight replanning for REFINE_GOAL state too
@@ -900,6 +916,107 @@ void MissionFsmNode::publish_drone_marker() {
   drone_marker_pub_->publish(marker);
 }
 
+void MissionFsmNode::start_refine_for_current_goal(const std::string &reason) {
+  // If we have no active goal to refine, fallback to normal exploration loop.
+  if (!goal_active_) {
+    RCLCPP_WARN(this->get_logger(),
+                "Requested refine transition without active goal (%s).",
+                reason.c_str());
+    return;
+  }
+
+  // Keep XY fixed and try nearby altitudes. This gives the planner/controller
+  // a structured recovery path before we eventually blacklist this goal.
+  strategic_goal_ = current_goal_;
+  build_z_retry_altitudes(current_goal_.z);
+  z_retry_index_ = 0;
+
+  cancel_pub_->publish(std_msgs::msg::Empty());
+  goal_active_ = false;
+
+  RCLCPP_WARN(this->get_logger(),
+              "Triggering REFINE_GOAL for [%.2f, %.2f, %.2f] (%s).",
+              strategic_goal_.x, strategic_goal_.y, strategic_goal_.z,
+              reason.c_str());
+  transition_to(MissionState::REFINE_GOAL);
+}
+
+void MissionFsmNode::build_z_retry_altitudes(double center_z) {
+  z_retry_altitudes_.clear();
+  z_retry_altitudes_.push_back(center_z);
+
+  const int max_attempts = std::max(1, z_retry_max_attempts_);
+  int level = 1;
+  while (static_cast<int>(z_retry_altitudes_.size()) < max_attempts) {
+    z_retry_altitudes_.push_back(center_z - level * z_retry_step_);
+    if (static_cast<int>(z_retry_altitudes_.size()) >= max_attempts) {
+      break;
+    }
+    z_retry_altitudes_.push_back(center_z + level * z_retry_step_);
+    ++level;
+  }
+}
+
+bool MissionFsmNode::try_activate_exploration_goal(const geometry_msgs::msg::Point &goal) {
+  build_z_retry_altitudes(goal.z);
+  z_retry_index_ = 0;
+  if (z_retry_altitudes_.empty()) {
+    return false;
+  }
+
+  geometry_msgs::msg::PoseStamped planner_goal;
+  planner_goal.header.stamp = this->now();
+  planner_goal.header.frame_id = "world";
+  planner_goal.pose.position.x = goal.x;
+  planner_goal.pose.position.y = goal.y;
+  planner_goal.pose.position.z = z_retry_altitudes_[z_retry_index_++];
+  planner_goal.pose.orientation.w = 1.0;
+
+  double goal_dist = std::hypot(planner_goal.pose.position.x - current_pose_.position.x,
+                                planner_goal.pose.position.y - current_pose_.position.y);
+
+  if (goal_dist < min_exploration_goal_distance_) {
+    ++consecutive_too_close_rejections_;
+    if (consecutive_too_close_rejections_ < MAX_CONSECUTIVE_TOO_CLOSE_REJECTIONS) {
+      RCLCPP_WARN(this->get_logger(),
+                  "Exploration goal too close (%.2f m < %.2f m). "
+                  "Rejecting (consecutive rejections: %d/%d).",
+                  goal_dist, min_exploration_goal_distance_,
+                  consecutive_too_close_rejections_,
+                  MAX_CONSECUTIVE_TOO_CLOSE_REJECTIONS);
+      return false;
+    }
+
+    RCLCPP_WARN(this->get_logger(),
+                "Exploration goal too close (%.2f m < %.2f m), but accepting anyway "
+                "after %d consecutive rejections to avoid deadlock.",
+                goal_dist, min_exploration_goal_distance_,
+                consecutive_too_close_rejections_);
+    consecutive_too_close_rejections_ = 0;
+  } else {
+    consecutive_too_close_rejections_ = 0;
+  }
+
+  current_goal_ = planner_goal.pose.position;
+  goal_set_time_ = this->now();
+  last_pose_at_goal_set_ = current_pose_.position;
+
+  if (planner_type_ == "A_star") {
+    planner_goal_pub_a_->publish(planner_goal);
+  } else {
+    planner_goal_pub_->publish(planner_goal);
+  }
+  goal_active_ = true;
+
+  RCLCPP_INFO(
+      this->get_logger(),
+      "Navigating to exploration goal via planner: [%.2f, %.2f, %.2f] (distance=%.2f m)",
+      planner_goal.pose.position.x, planner_goal.pose.position.y,
+      planner_goal.pose.position.z, goal_dist);
+
+  return true;
+}
+
 void MissionFsmNode::request_exploration_goal() {
   // Check if service is ready (non-blocking)
   if (!exploration_goal_client_->service_is_ready()) {
@@ -953,87 +1070,15 @@ void MissionFsmNode::request_exploration_goal() {
                     "Received exploration goal: [%.2f, %.2f, %.2f]",
                     strategic_goal_.x, strategic_goal_.y, strategic_goal_.z);
 
-        // Build Z-retry altitudes centered on the explorer's goal Z
-        double goal_z = strategic_goal_.z;
-        z_retry_altitudes_ = {goal_z, goal_z - 1.0, goal_z + 1.0, goal_z - 2.0, goal_z + 2.0};
-        z_retry_index_ = 0;
-        double altitude = z_retry_altitudes_[z_retry_index_];
-        z_retry_index_++;
-
-        // Send goal to planner node, which will compute a collision-free path
-        // for the trajectory generator.
-        geometry_msgs::msg::PoseStamped planner_goal;
-        planner_goal.header.stamp = this->now();
-        planner_goal.header.frame_id = "world";
-        planner_goal.pose.position.x = strategic_goal_.x;
-        planner_goal.pose.position.y = strategic_goal_.y;
-        planner_goal.pose.position.z = altitude;
-        planner_goal.pose.orientation.w = 1.0;
-
-        // Check minimum distance - reject goals that are too close
-        double goal_dist = std::sqrt(
-            (planner_goal.pose.position.x - current_pose_.position.x) *
-            (planner_goal.pose.position.x - current_pose_.position.x) +
-            (planner_goal.pose.position.y - current_pose_.position.y) *
-            (planner_goal.pose.position.y - current_pose_.position.y));
-        
-        if (goal_dist < min_exploration_goal_distance_) {
-          ++consecutive_too_close_rejections_;
-          
-          // If we've rejected 3 consecutive goals for being too close, accept this one anyway
-          // to prevent infinite loop
-          if (consecutive_too_close_rejections_ >= MAX_CONSECUTIVE_TOO_CLOSE_REJECTIONS) {
-            RCLCPP_WARN(this->get_logger(),
-                        "Exploration goal too close (%.2f m < %.2f m), but accepting anyway "
-                        "after %d consecutive rejections to avoid getting stuck.",
-                        goal_dist, min_exploration_goal_distance_,
-                        consecutive_too_close_rejections_);
-            consecutive_too_close_rejections_ = 0;  // Reset counter
-            // Continue to accept the goal below
-          } else {
-            RCLCPP_WARN(this->get_logger(),
-                        "Exploration goal too close (%.2f m < %.2f m). "
-                        "Rejecting (consecutive rejections: %d/%d). Requesting new goal.",
-                        goal_dist, min_exploration_goal_distance_,
-                        consecutive_too_close_rejections_,
-                        MAX_CONSECUTIVE_TOO_CLOSE_REJECTIONS);
-            // Request a new goal immediately
-            goal_request_pending_ = false;
-            request_exploration_goal();
-            return;
-          }
-        } else {
-          // Goal is far enough - reset rejection counter
-          consecutive_too_close_rejections_ = 0;
+        if (!try_activate_exploration_goal(strategic_goal_)) {
+          goal_request_pending_ = false;
+          request_exploration_goal();
+          return;
         }
-
-        // Track the active exploration goal so EXPLORE state's distance check
-        // uses this frontier goal rather than an old waypoint (e.g. entrance).
-        current_goal_.x = planner_goal.pose.position.x;
-        current_goal_.y = planner_goal.pose.position.y;
-        current_goal_.z = planner_goal.pose.position.z;
-        
-        // Track when goal was set and drone position for timeout/movement detection
-        goal_set_time_ = this->now();
-        last_pose_at_goal_set_ = current_pose_.position;
-
-        if (planner_type_ == "A_star") {
-          planner_goal_pub_a_->publish(planner_goal);
-        } else {
-          planner_goal_pub_->publish(planner_goal);
-        }
-        goal_active_ = true;
 
         // Successful goal activation: reset failure tracking
         consecutive_goal_request_failures_ = 0;
         last_successful_exploration_goal_time_ = this->now();
-
-        RCLCPP_INFO(
-            this->get_logger(),
-            "Navigating to exploration goal via planner: [%.2f, %.2f, %.2f] "
-            "(distance=%.2f m)",
-            planner_goal.pose.position.x, planner_goal.pose.position.y,
-            planner_goal.pose.position.z, goal_dist);
       });
 }
 

@@ -110,6 +110,7 @@ public:
     declare_parameter<std::vector<int64_t>>("hsv_lower", {20, 70, 70});
     declare_parameter<std::vector<int64_t>>("hsv_upper", {70, 255, 255});
     declare_parameter<double>("gating_distance", 5.0);
+    declare_parameter<double>("track_merge_distance", 2.5);
     declare_parameter<int>("min_observations", 10);
     declare_parameter<double>("tf_timeout_s", 0.2);
     declare_parameter<bool>("use_latest_tf_on_extrapolation", true);
@@ -435,6 +436,8 @@ private:
   }
 
   void PublishTracks(const builtin_interfaces::msg::Time & stamp) {
+     MergeNearbyTracks();
+     
     const int min_observations = get_parameter("min_observations").as_int();
     const auto world_frame = get_parameter("world_frame").as_string();
     for (auto & track : tracks_) {
@@ -450,6 +453,39 @@ private:
       pose.pose.orientation.w = 1.0;
       detections_pub_->publish(pose);
       track.published = true;
+    }
+  }
+  
+  void MergeNearbyTracks() {
+    const double merge_distance = get_parameter("track_merge_distance").as_double();
+    if (merge_distance <= 0.0 || tracks_.size() < 2) {
+      return;
+    }
+
+    for (size_t i = 0; i < tracks_.size(); ++i) {
+      for (size_t j = i + 1; j < tracks_.size();) {
+        const double dx = tracks_[i].position[0] - tracks_[j].position[0];
+        const double dy = tracks_[i].position[1] - tracks_[j].position[1];
+        const double dz = tracks_[i].position[2] - tracks_[j].position[2];
+        const double distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+
+        if (distance > merge_distance) {
+          ++j;
+          continue;
+        }
+
+        const int obs_i = std::max(1, tracks_[i].observations);
+        const int obs_j = std::max(1, tracks_[j].observations);
+        const int merged_obs = obs_i + obs_j;
+        tracks_[i].position = {
+          (tracks_[i].position[0] * obs_i + tracks_[j].position[0] * obs_j) / merged_obs,
+          (tracks_[i].position[1] * obs_i + tracks_[j].position[1] * obs_j) / merged_obs,
+          (tracks_[i].position[2] * obs_i + tracks_[j].position[2] * obs_j) / merged_obs};
+        tracks_[i].observations = merged_obs;
+        tracks_[i].published = tracks_[i].published || tracks_[j].published;
+
+        tracks_.erase(tracks_.begin() + j);
+      }
     }
   }
 
