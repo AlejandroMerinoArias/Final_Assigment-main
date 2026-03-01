@@ -4,6 +4,118 @@
 #include <cmath>
 #include <utility>
 
+namespace {
+
+std::vector<double> estimateSegmentTimesContinuous(
+    const mav_trajectory_generation::Vertex::Vector &vertices,
+    const double max_v, const double max_a) {
+  CHECK_GE(vertices.size(), 2);
+
+  const size_t vertex_count = vertices.size();
+  std::vector<Eigen::Vector3d> positions(vertex_count, Eigen::Vector3d::Zero());
+  std::vector<double> distances(vertex_count - 1, 0.0);
+
+  for (size_t i = 0; i < vertex_count; ++i) {
+    Eigen::VectorXd pos_xd;
+    vertices[i].getConstraint(mav_trajectory_generation::derivative_order::POSITION,
+                              &pos_xd);
+    positions[i] = Eigen::Vector3d(pos_xd);
+    if (i > 0) {
+      distances[i - 1] = (positions[i] - positions[i - 1]).norm();
+    }
+  }
+
+  std::vector<double> segment_times;
+  segment_times.reserve(vertex_count - 1);
+
+  constexpr double kMinSegmentTime = 0.08;
+  constexpr double kMinVertexSpeed = 0.05;
+  constexpr double kTurnSlowdownFloor = 0.20;
+
+  std::vector<double> waypoint_speeds(vertex_count, max_v);
+  waypoint_speeds.front() = 0.0;
+  waypoint_speeds.back() = 0.0;
+
+  for (size_t i = 1; i + 1 < vertex_count; ++i) {
+    const Eigen::Vector3d in = positions[i] - positions[i - 1];
+    const Eigen::Vector3d out = positions[i + 1] - positions[i];
+    const double in_norm = in.norm();
+    const double out_norm = out.norm();
+    if (in_norm < 1e-4 || out_norm < 1e-4) {
+      waypoint_speeds[i] = 0.0;
+      continue;
+    }
+
+    const double corner_cos =
+        std::clamp((in / in_norm).dot(out / out_norm), -1.0, 1.0);
+    const double turn_factor =
+        std::max(kTurnSlowdownFloor, std::sqrt(std::max(0.0, (corner_cos + 1.0) * 0.5)));
+    waypoint_speeds[i] = std::max(kMinVertexSpeed, max_v * turn_factor);
+  }
+
+  for (size_t i = 0; i < vertex_count; ++i) {
+    Eigen::VectorXd vel_xd;
+    if (vertices[i].getConstraint(mav_trajectory_generation::derivative_order::VELOCITY,
+                                  &vel_xd)) {
+      waypoint_speeds[i] = std::min(max_v, Eigen::Vector3d(vel_xd).norm());
+    }
+  }
+
+  for (size_t i = 0; i + 1 < vertex_count; ++i) {
+    const double d = distances[i];
+    if (d < 1e-4) {
+      waypoint_speeds[i + 1] = 0.0;
+      continue;
+    }
+    const double vmax_next = std::sqrt(std::max(0.0, waypoint_speeds[i] * waypoint_speeds[i] +
+                                                         2.0 * max_a * d));
+    waypoint_speeds[i + 1] = std::min(waypoint_speeds[i + 1], vmax_next);
+  }
+
+  for (size_t i = vertex_count - 1; i > 0; --i) {
+    const double d = distances[i - 1];
+    if (d < 1e-4) {
+      waypoint_speeds[i - 1] = 0.0;
+      continue;
+    }
+    const double vmax_prev = std::sqrt(std::max(0.0, waypoint_speeds[i] * waypoint_speeds[i] +
+                                                         2.0 * max_a * d));
+    waypoint_speeds[i - 1] = std::min(waypoint_speeds[i - 1], vmax_prev);
+  }
+
+  for (size_t i = 0; i + 1 < vertex_count; ++i) {
+    const double d = distances[i];
+    if (d < 1e-4) {
+      segment_times.push_back(kMinSegmentTime);
+      continue;
+    }
+
+    const double v0 = waypoint_speeds[i];
+    const double v1 = waypoint_speeds[i + 1];
+    const double v_peak_sq = max_a * d + 0.5 * (v0 * v0 + v1 * v1);
+    const double v_peak = std::sqrt(std::max(0.0, v_peak_sq));
+
+    double segment_time = 0.0;
+    if (v_peak <= max_v + 1e-6) {
+      segment_time = (std::max(0.0, v_peak - v0) + std::max(0.0, v_peak - v1)) /
+                     std::max(1e-6, max_a);
+    } else {
+      const double t_acc = std::max(0.0, (max_v - v0) / std::max(1e-6, max_a));
+      const double t_dec = std::max(0.0, (max_v - v1) / std::max(1e-6, max_a));
+      const double d_acc = std::max(0.0, (max_v * max_v - v0 * v0) / (2.0 * std::max(1e-6, max_a)));
+      const double d_dec = std::max(0.0, (max_v * max_v - v1 * v1) / (2.0 * std::max(1e-6, max_a)));
+      const double d_cruise = std::max(0.0, d - d_acc - d_dec);
+      segment_time = t_acc + t_dec + d_cruise / std::max(1e-3, max_v);
+    }
+
+    segment_times.push_back(std::max(kMinSegmentTime, segment_time));
+  }
+
+  return segment_times;
+}
+
+}  // namespace
+
 TrajectoryPlanner::TrajectoryPlanner(rclcpp::Node &node)
     : node_(&node), current_pose_(Eigen::Affine3d::Identity()),
       current_velocity_(Eigen::Vector3d::Zero()),
@@ -219,6 +331,16 @@ Eigen::Vector3d TrajectoryPlanner::computeAutoWaypointVelocity(
 
   const Eigen::Vector3d dir_prev = to_prev / len_prev;
   const Eigen::Vector3d dir_next = to_next / len_next;
+  const double corner_cos = std::clamp(dir_prev.dot(dir_next), -1.0, 1.0);
+
+  // For near-colinear waypoint chains (typical A* output), do not inject
+  // hard velocity equality constraints at every midpoint. Let the optimizer
+  // keep speed continuity naturally; this reduces residual stop-and-go.
+  constexpr double kColinearCosThreshold = 0.995;  // ~5.7 degrees.
+  if (corner_cos > kColinearCosThreshold) {
+    return Eigen::Vector3d::Zero();
+  }
+
   Eigen::Vector3d tangent = dir_prev + dir_next;
   if (tangent.norm() < 1e-4) {
     tangent = dir_next;
@@ -226,7 +348,6 @@ Eigen::Vector3d TrajectoryPlanner::computeAutoWaypointVelocity(
     tangent.normalize();
   }
 
-  const double corner_cos = std::clamp(dir_prev.dot(dir_next), -1.0, 1.0);
   const double turn_factor = std::max(auto_tangent_turn_slowdown_, (corner_cos + 1.0) * 0.5);
   const double local_distance = std::min(len_prev, len_next);
   const double accel_limited_speed = std::sqrt(std::max(0.0, max_a_ * local_distance));
@@ -518,11 +639,11 @@ bool TrajectoryPlanner::planTrajectoryFromPath(
         path.poses.size() - (vertices.size() - 1));
   }
 
-  // Use velocity-ramp (rest-to-rest accel) for segment times so short segments
-  // get sensible durations; Nfabian tends to over-allocate time and yields very
-  // slow trajectories.
-  segment_times = mav_trajectory_generation::estimateSegmentTimesVelocityRamp(
-      vertices, max_v_, max_a_, 1.0);
+  // Use continuous timing that accounts for optional waypoint velocity
+  // constraints. This avoids the rest-to-rest bias from per-segment velocity
+  // ramps, which can induce unnecessary braking at dense intermediate
+  // waypoints (e.g., A* paths on straight corridors).
+  segment_times = estimateSegmentTimesContinuous(vertices, max_v_, max_a_);
 
   // === DIAGNOSTIC: Log segment times ===
   {
