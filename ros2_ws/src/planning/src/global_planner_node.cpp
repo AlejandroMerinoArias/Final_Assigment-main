@@ -483,49 +483,29 @@ private:
       return false;
     }
 
-    octomap::point3d query(static_cast<float>(p.x()), static_cast<float>(p.y()),
-                           static_cast<float>(p.z()));
-    octomap::OcTreeNode *node = octree_->search(query);
-    if (!node) {
-      // Unknown space: for exploration, allow stepping into unknown as long as
-      // we don't see any occupied voxels within the inflated robot radius
-      // below. So we do NOT early-reject here.
-    } else {
-      const double occ_prob = node->getOccupancy();
-      const double occ_thresh = octree_->getOccupancyThres();
-      if (occ_prob >= occ_thresh) {
-        return false;
-      }
-    }
+
     const double occ_thresh = octree_->getOccupancyThres();
 
-    // Simple inflation by checking neighboring samples within robot_radius_.
     const double r = robot_radius_;
-    // Use finer sampling for collision checking to avoid missing thin obstacles
-    // Step size should be at most half the robot radius to ensure coverage
-    // and explicitly controlled by collision_check_resolution_
-    const double step = std::min(collision_check_resolution_,
-                                 std::min(robot_radius_ * 0.3, 0.1));
-    for (double dx = -r; dx <= r; dx += step) {
-      for (double dy = -r; dy <= r; dy += step) {
-        for (double dz = -r; dz <= r; dz += step) {
-          if (dx * dx + dy * dy + dz * dz > r * r) {
-            continue;
-          }
-          octomap::point3d q(static_cast<float>(p.x() + dx),
-                             static_cast<float>(p.y() + dy),
-                             static_cast<float>(p.z() + dz));
-          octomap::OcTreeNode *n = octree_->search(q);
-          if (!n) {
-            // Unknown neighbor voxel: treat as free for exploration.
-            continue;
-          }
-          if (n->getOccupancy() >= occ_thresh) {
-            return false;
-          }
+    // Create a 3D bounding box around the drone's position
+    octomap::point3d bbx_min(p.x() - r, p.y() - r, p.z() - r);
+    octomap::point3d bbx_max(p.x() + r, p.y() + r, p.z() + r);
+
+    // Iterate ONLY over nodes that exist within this box (extremely fast)
+    for (auto it = octree_->begin_leafs_bbx(bbx_min, bbx_max),
+              end = octree_->end_leafs_bbx(); it != end; ++it) {
+      
+      // If the voxel is occupied
+      if (it->getOccupancy() >= occ_thresh) {
+        // Check if it actually falls inside the spherical robot radius
+        double dist = it.getCoordinate().distance(octomap::point3d(p.x(), p.y(), p.z()));
+        if (dist <= r) {
+          return false; // Collision detected
         }
       }
     }
+    // If we found no occupied voxels inside the radius, it is safe!
+    // (Unknown space is naturally skipped by the iterator, allowing exploration)
     return true;
   }
 

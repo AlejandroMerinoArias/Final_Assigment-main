@@ -21,7 +21,7 @@ def generate_launch_description():
     )
 
     planner_type_arg = DeclareLaunchArgument(
-        'planner_type', default_value='A_star',
+        'planner_type', default_value='RRT',
         description='Type of global planner to use: A_star or RRT'
     )
 
@@ -191,7 +191,7 @@ def generate_launch_description():
                 # blocking for long periods in cluttered areas.
                 "max_planning_time_sec": 1.5,
                 "allow_partial_paths": False,
-                "direct_path_max_distance": 25.0,
+                "direct_path_max_distance": 0.0,
                 # Allow broader vertical sampling around target goals so
                 # RRT* can route through sloped cave sections.
                 "z_band": 3.5,
@@ -305,7 +305,7 @@ def generate_launch_description():
             # Dai-Lite Sampling Parameters
             {'num_candidates': 20},           # Random samples per request
             {'downsample_grid': 1.0},         # Spatial spreading grid (m)
-            {'frontier_search_radius': 20.0}, # BBX radius for frontier detection (m)
+            {'frontier_search_radius': 10.0}, # BBX radius for frontier detection (m)
             
             # Scoring & Constraints
             {'drone_speed': 2.0},             # For travel time estimation (m/s)
