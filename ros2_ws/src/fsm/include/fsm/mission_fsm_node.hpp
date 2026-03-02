@@ -129,6 +129,9 @@ private:
                              bool is_provisional = false);
   void add_edge_between_nodes(int from_node, int to_node);
   void remove_checkpoint_node(int node_id);
+  void simplify_checkpoint_graph();
+  void fuse_nearby_checkpoint_nodes();
+  void redistribute_edges_through_nearby_nodes();
   void update_checkpoint_graph();
   void update_mode_decision();
   void suspend_explorer_mode_for_travel();
@@ -144,6 +147,9 @@ private:
   double point_to_segment_distance(const geometry_msgs::msg::Point &p,
                                    const geometry_msgs::msg::Point &a,
                                    const geometry_msgs::msg::Point &b) const;
+  double projection_parameter_on_segment(const geometry_msgs::msg::Point &p,
+                                         const geometry_msgs::msg::Point &a,
+                                         const geometry_msgs::msg::Point &b) const;
   bool is_within_node_distance_of_any_node(const geometry_msgs::msg::Point &pos) const;
   bool find_safer_node_position(const geometry_msgs::msg::Point &center,
                                 geometry_msgs::msg::Point &safe_out) const;
