@@ -116,7 +116,8 @@ private:
   void replan_current_goal();
   void start_refine_for_current_goal(const std::string &reason);
   void build_z_retry_altitudes(double center_z);
-  bool try_activate_exploration_goal(const geometry_msgs::msg::Point &goal);
+  bool try_activate_exploration_goal(const geometry_msgs::msg::Point &goal,
+                                     bool allow_close_goal = false);
   bool is_inside_node(int node_id, const geometry_msgs::msg::Point &pos) const;
   std::optional<int> find_node_containing_position(const geometry_msgs::msg::Point &pos) const;
   int create_checkpoint_node(const geometry_msgs::msg::Point &pos, bool is_entrance = false,
