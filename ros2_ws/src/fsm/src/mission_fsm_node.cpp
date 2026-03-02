@@ -1326,6 +1326,7 @@ void MissionFsmNode::suspend_explorer_mode_for_travel() {
   last_pose_at_goal_set_ = current_pose_.position;
   reset_explorer_goal_filters();
   reset_explorer_filters_on_next_goal_ = false;
+  ++explorer_request_epoch_;
   explorer_mode_suspended_for_travel_ = true;
 
   RCLCPP_INFO(this->get_logger(),
@@ -1418,6 +1419,10 @@ bool MissionFsmNode::try_activate_exploration_goal(const geometry_msgs::msg::Poi
 }
 
 void MissionFsmNode::request_exploration_goal() {
+  if (explorer_mode_suspended_for_travel_) {
+    return;
+  }
+
   // Check if service is ready (non-blocking)
   if (!exploration_goal_client_->service_is_ready()) {
     RCLCPP_WARN_THROTTLE(
@@ -1434,14 +1439,22 @@ void MissionFsmNode::request_exploration_goal() {
 
   // Set flag to prevent duplicate requests
   goal_request_pending_ = true;
+  const uint64_t request_epoch = explorer_request_epoch_;
 
   // Async call with callback
   exploration_goal_client_->async_send_request(
       request,
-      [this](rclcpp::Client<exploring::srv::GetExplorationGoal>::SharedFuture
+      [this, request_epoch](rclcpp::Client<exploring::srv::GetExplorationGoal>::SharedFuture
                  future) {
         // Clear flag when response received
         goal_request_pending_ = false;
+
+        if (request_epoch != explorer_request_epoch_ ||
+            explorer_mode_suspended_for_travel_) {
+          RCLCPP_DEBUG(this->get_logger(),
+                       "Discarding stale exploration goal response (epoch mismatch or explorer suspended).");
+          return;
+        }
 
         auto response = future.get();
 
@@ -1637,6 +1650,34 @@ double MissionFsmNode::point_to_segment_distance(const geometry_msgs::msg::Point
   return calculate_distance(p, projection);
 }
 
+bool MissionFsmNode::is_potential_valid_global(const geometry_msgs::msg::Point &candidate) const {
+  for (const auto &entry : graph_nodes_) {
+    if (calculate_distance(entry.second.position, candidate) < nodes_distance_) {
+      return false;
+    }
+  }
+
+  std::set<std::pair<int, int>> unique_edges;
+  for (const auto &entry : graph_nodes_) {
+    for (const int neigh : entry.second.edges) {
+      unique_edges.insert({std::min(entry.first, neigh), std::max(entry.first, neigh)});
+    }
+  }
+
+  for (const auto &edge : unique_edges) {
+    if (graph_nodes_.count(edge.first) == 0 || graph_nodes_.count(edge.second) == 0) {
+      continue;
+    }
+    const auto &from = graph_nodes_.at(edge.first).position;
+    const auto &to = graph_nodes_.at(edge.second).position;
+    if (point_to_segment_distance(candidate, from, to) <= nodes_distance_) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 void MissionFsmNode::periodic_potential_cleanup() {
   if (graph_nodes_.empty()) {
     return;
@@ -1694,13 +1735,7 @@ void MissionFsmNode::prune_potentials_within_node_distance_recursive() {
       auto &pots = entry.second.potentials;
       const auto old_size = pots.size();
       pots.erase(std::remove_if(pots.begin(), pots.end(), [&](const PotentialNode &pot) {
-                   for (const auto &node_entry : graph_nodes_) {
-                     if (calculate_distance(pot.position, node_entry.second.position) <=
-                         nodes_distance_) {
-                       return true;
-                     }
-                   }
-                   return false;
+                   return !is_potential_valid_global(pot.position);
                  }),
                 pots.end());
       removed_any = removed_any || (pots.size() != old_size);
@@ -1772,12 +1807,8 @@ void MissionFsmNode::register_potential_node_for_anchor(const geometry_msgs::msg
   }
 
   auto &anchor = graph_nodes_[last_visited_node_id_];
-  // Reject any potential candidate that falls inside the node-spacing threshold
-  // of *any* existing checkpoint node (not only anchor/adjacent nodes).
-  for (const auto &entry : graph_nodes_) {
-    if (calculate_distance(entry.second.position, candidate) < nodes_distance_) {
-      return;
-    }
+  if (!is_potential_valid_global(candidate)) {
+    return;
   }
 
   const double candidate_angle = std::atan2(candidate.y - anchor.position.y,

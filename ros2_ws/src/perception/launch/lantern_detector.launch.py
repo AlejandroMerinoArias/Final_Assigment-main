@@ -47,7 +47,7 @@ def generate_launch_description():
             {
                 "detections_topic": "/detected_lanterns",
                 "marker_topic": "/lantern_marker",
-                "sphere_diameter": 0.3,
+                "sphere_diameter": 1.6,
             }
         ],
     )
