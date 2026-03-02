@@ -1617,9 +1617,12 @@ double MissionFsmNode::point_to_segment_distance(const geometry_msgs::msg::Point
   return calculate_distance(p, projection);
 }
 
-void MissionFsmNode::periodic_potential_cleanup() {
-  if (graph_nodes_.empty()) {
-    return;
+bool MissionFsmNode::is_potential_too_close_to_graph(
+    const geometry_msgs::msg::Point &candidate) const {
+  for (const auto &node_entry : graph_nodes_) {
+    if (calculate_distance(candidate, node_entry.second.position) < nodes_distance_) {
+      return true;
+    }
   }
 
   std::set<std::pair<int, int>> unique_edges;
@@ -1631,30 +1634,30 @@ void MissionFsmNode::periodic_potential_cleanup() {
     }
   }
 
+  for (const auto &edge : unique_edges) {
+    if (graph_nodes_.count(edge.first) == 0 || graph_nodes_.count(edge.second) == 0) {
+      continue;
+    }
+    const auto &from = graph_nodes_.at(edge.first).position;
+    const auto &to = graph_nodes_.at(edge.second).position;
+    if (point_to_segment_distance(candidate, from, to) < nodes_distance_) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+void MissionFsmNode::periodic_potential_cleanup() {
+  if (graph_nodes_.empty()) {
+    return;
+  }
+
   for (auto &entry : graph_nodes_) {
     auto &pots = entry.second.potentials;
     pots.erase(std::remove_if(pots.begin(), pots.end(),
                               [&](const PotentialNode &pot) {
-                                for (const auto &node_entry : graph_nodes_) {
-                                  if (calculate_distance(pot.position, node_entry.second.position) <=
-                                      nodes_distance_) {
-                                    return true;
-                                  }
-                                }
-
-                                for (const auto &edge : unique_edges) {
-                                  if (graph_nodes_.count(edge.first) == 0 ||
-                                      graph_nodes_.count(edge.second) == 0) {
-                                    continue;
-                                  }
-                                  const auto &from = graph_nodes_.at(edge.first).position;
-                                  const auto &to = graph_nodes_.at(edge.second).position;
-                                  if (point_to_segment_distance(pot.position, from, to) <=
-                                      nodes_distance_) {
-                                    return true;
-                                  }
-                                }
-                                return false;
+                                return is_potential_too_close_to_graph(pot.position);
                               }),
                pots.end());
   }
@@ -1724,12 +1727,9 @@ void MissionFsmNode::register_potential_node_for_anchor(const geometry_msgs::msg
   }
 
   auto &anchor = graph_nodes_[last_visited_node_id_];
-  // Reject any potential candidate that falls inside the node-spacing threshold
-  // of *any* existing checkpoint node (not only anchor/adjacent nodes).
-  for (const auto &entry : graph_nodes_) {
-    if (calculate_distance(entry.second.position, candidate) < nodes_distance_) {
-      return;
-    }
+  // Active filter: reject potentials too close to any node or graph edge.
+  if (is_potential_too_close_to_graph(candidate)) {
+    return;
   }
 
   const double candidate_angle = std::atan2(candidate.y - anchor.position.y,
