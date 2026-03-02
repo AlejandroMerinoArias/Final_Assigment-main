@@ -1353,12 +1353,10 @@ void MissionFsmNode::suspend_explorer_mode_for_travel() {
     return;
   }
 
-  // Always publish cancel when explorer gets suspended. This prevents stale
-  // goals from being reactivated by downstream planners/controllers if local
-  // bookkeeping gets out of sync.
-  if (goal_active_ && active_goal_source_ == GoalSource::EXPLORER) {
-    cancel_pub_->publish(std_msgs::msg::Empty());
-  }
+  // Always publish cancel when explorer gets suspended. A planner goal may
+  // already have been consumed and converted into a trajectory, so we must
+  // explicitly flush downstream execution regardless of local source flags.
+  cancel_pub_->publish(std_msgs::msg::Empty());
   goal_active_ = false;
 
   auto disable_msg = std_msgs::msg::Bool();

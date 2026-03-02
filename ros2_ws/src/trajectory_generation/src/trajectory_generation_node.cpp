@@ -13,6 +13,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "trajectory_msgs/msg/multi_dof_joint_trajectory.hpp"
 #include "visualization_msgs/msg/marker_array.hpp"
+#include "std_msgs/msg/empty.hpp"
 
 #include "mav_trajectory_generation/trajectory_sampling.h"
 #include "trajectory_generation/planner.hpp"
@@ -49,6 +50,19 @@ public:
       path_topic_, 10,
       std::bind(&TrajectoryGenerationNode::pathCallback, this, std::placeholders::_1));
 
+    cancel_sub_ = this->create_subscription<std_msgs::msg::Empty>(
+      "/fsm/cancel", 10,
+      [this](const std_msgs::msg::Empty::SharedPtr) {
+        if (!publish_timer_->is_canceled()) {
+          publish_timer_->cancel();
+        }
+        current_sample_time_ = 0.0;
+        segment_times_.clear();
+        segment_yaws_.clear();
+        trajectory_ = mav_trajectory_generation::Trajectory();
+        RCLCPP_INFO(get_logger(), "Received /fsm/cancel: stopped trajectory streaming and cleared active trajectory.");
+      });
+
     publish_timer_ = this->create_wall_timer(
       std::chrono::duration<double>(dt_),
       std::bind(&TrajectoryGenerationNode::commandTimerCallback, this));
@@ -59,7 +73,14 @@ private:
   void pathCallback(const nav_msgs::msg::Path::SharedPtr path)
   {
     if (!path || path->poses.empty()) {
-      RCLCPP_WARN(get_logger(), "Received empty path message.");
+      if (!publish_timer_->is_canceled()) {
+        publish_timer_->cancel();
+      }
+      current_sample_time_ = 0.0;
+      segment_times_.clear();
+      segment_yaws_.clear();
+      trajectory_ = mav_trajectory_generation::Trajectory();
+      RCLCPP_INFO(get_logger(), "Received empty path message: active trajectory cleared.");
       return;
     }
 
@@ -256,6 +277,7 @@ private:
   rclcpp::Publisher<trajectory_msgs::msg::MultiDOFJointTrajectory>::SharedPtr command_pub_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
   rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr path_sub_;
+  rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr cancel_sub_;
   rclcpp::TimerBase::SharedPtr publish_timer_;
 
   bool publish_whole_trajectory_;
