@@ -1547,6 +1547,73 @@ void MissionFsmNode::prune_potential_nodes_near(const geometry_msgs::msg::Point 
   }
 }
 
+
+double MissionFsmNode::point_to_segment_distance(const geometry_msgs::msg::Point &p,
+                                                 const geometry_msgs::msg::Point &a,
+                                                 const geometry_msgs::msg::Point &b) const {
+  const double abx = b.x - a.x;
+  const double aby = b.y - a.y;
+  const double abz = b.z - a.z;
+  const double apx = p.x - a.x;
+  const double apy = p.y - a.y;
+  const double apz = p.z - a.z;
+
+  const double ab_len_sq = abx * abx + aby * aby + abz * abz;
+  if (ab_len_sq < 1e-9) {
+    return calculate_distance(p, a);
+  }
+
+  const double t = std::clamp((apx * abx + apy * aby + apz * abz) / ab_len_sq, 0.0, 1.0);
+  geometry_msgs::msg::Point projection;
+  projection.x = a.x + t * abx;
+  projection.y = a.y + t * aby;
+  projection.z = a.z + t * abz;
+  return calculate_distance(p, projection);
+}
+
+void MissionFsmNode::periodic_potential_cleanup() {
+  if (graph_nodes_.empty()) {
+    return;
+  }
+
+  std::set<std::pair<int, int>> unique_edges;
+  for (const auto &entry : graph_nodes_) {
+    for (const int neigh : entry.second.edges) {
+      const int a = std::min(entry.first, neigh);
+      const int b = std::max(entry.first, neigh);
+      unique_edges.insert({a, b});
+    }
+  }
+
+  for (auto &entry : graph_nodes_) {
+    auto &pots = entry.second.potentials;
+    pots.erase(std::remove_if(pots.begin(), pots.end(),
+                              [&](const PotentialNode &pot) {
+                                for (const auto &node_entry : graph_nodes_) {
+                                  if (calculate_distance(pot.position, node_entry.second.position) <=
+                                      nodes_distance_) {
+                                    return true;
+                                  }
+                                }
+
+                                for (const auto &edge : unique_edges) {
+                                  if (graph_nodes_.count(edge.first) == 0 ||
+                                      graph_nodes_.count(edge.second) == 0) {
+                                    continue;
+                                  }
+                                  const auto &from = graph_nodes_.at(edge.first).position;
+                                  const auto &to = graph_nodes_.at(edge.second).position;
+                                  if (point_to_segment_distance(pot.position, from, to) <=
+                                      nodes_distance_) {
+                                    return true;
+                                  }
+                                }
+                                return false;
+                              }),
+               pots.end());
+  }
+}
+
 void MissionFsmNode::register_potential_node_for_anchor(const geometry_msgs::msg::Point &candidate) {
   if (last_visited_node_id_ < 0 || graph_nodes_.count(last_visited_node_id_) == 0) {
     return;
@@ -1694,6 +1761,8 @@ void MissionFsmNode::update_checkpoint_graph() {
   if (graph_nodes_.empty()) {
     return;
   }
+
+  periodic_potential_cleanup();
 
   previous_node_id_ = current_node_id_;
   const auto containing = find_node_containing_position(current_pose_.position);

@@ -135,6 +135,10 @@ private:
   std::vector<int> compute_shortest_path_nodes(int start_node, int goal_node) const;
   void reset_graph_to_entrance();
   void prune_potential_nodes_near(const geometry_msgs::msg::Point &pos, double radius);
+  void periodic_potential_cleanup();
+  double point_to_segment_distance(const geometry_msgs::msg::Point &p,
+                                   const geometry_msgs::msg::Point &a,
+                                   const geometry_msgs::msg::Point &b) const;
   void mark_potential_node_unreachable_near(const geometry_msgs::msg::Point &pos);
 
   struct PotentialNode {
