@@ -1463,13 +1463,10 @@ void MissionFsmNode::register_potential_node_for_anchor(const geometry_msgs::msg
   }
 
   auto &anchor = graph_nodes_[last_visited_node_id_];
-  if (calculate_distance(anchor.position, candidate) < nodes_distance_) {
-    return;
-  }
-
-  for (const int neigh : anchor.edges) {
-    if (graph_nodes_.count(neigh) > 0 &&
-        calculate_distance(graph_nodes_[neigh].position, candidate) < nodes_distance_) {
+  // Reject any potential candidate that falls inside the node-spacing threshold
+  // of *any* existing checkpoint node (not only anchor/adjacent nodes).
+  for (const auto &entry : graph_nodes_) {
+    if (calculate_distance(entry.second.position, candidate) < nodes_distance_) {
       return;
     }
   }
