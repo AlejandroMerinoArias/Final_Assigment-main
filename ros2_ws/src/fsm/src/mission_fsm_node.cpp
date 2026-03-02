@@ -1,6 +1,7 @@
 #include "fsm/mission_fsm_node.hpp"
 
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <queue>
 
@@ -287,8 +288,34 @@ void MissionFsmNode::planner_status_callback(
 
     if (current_state_ == MissionState::EXPLORE &&
         active_goal_source_ == GoalSource::TRAVEL) {
-      RCLCPP_WARN(this->get_logger(),
-                  "Travel checkpoint planning failed. Keeping travel mode active and retrying.");
+      int target_node_id = -1;
+      if (!travel_path_.empty()) {
+        target_node_id = travel_path_.front();
+      }
+
+      if (target_node_id >= 0 && graph_nodes_.count(target_node_id) > 0) {
+        geometry_msgs::msg::Point alternate_position;
+        if (find_alternate_position_for_node(target_node_id, alternate_position)) {
+          graph_nodes_[target_node_id].position = alternate_position;
+          RCLCPP_WARN(this->get_logger(),
+                      "Travel checkpoint node %d unreachable. Retrying with nearby node position [%.2f, %.2f, %.2f].",
+                      target_node_id, alternate_position.x, alternate_position.y,
+                      alternate_position.z);
+          try_activate_exploration_goal(alternate_position, true,
+                                        GoalSource::TRAVEL, -1);
+          return;
+        }
+
+        RCLCPP_ERROR(this->get_logger(),
+                     "Travel checkpoint node %d remained unreachable after nearby retries. Falling back to explorer mode.",
+                     target_node_id);
+        clear_node_relocation_state(target_node_id);
+      }
+
+      travel_mode_ = false;
+      potential_resolution_node_id_ = -1;
+      travel_path_.clear();
+      resume_explorer_mode_after_travel();
       return;
     }
 
@@ -687,6 +714,7 @@ void MissionFsmNode::update_state() {
               calculate_distance(current_pose_.position,
                                  graph_nodes_.at(reached_node_id).position) <=
                   GOAL_REACHED_THRESHOLD) {
+            clear_node_relocation_state(reached_node_id);
             travel_path_.pop_front();
           }
 
@@ -1611,6 +1639,7 @@ void MissionFsmNode::remove_checkpoint_node(int node_id) {
 
   travel_path_.erase(std::remove(travel_path_.begin(), travel_path_.end(), node_id),
                      travel_path_.end());
+  clear_node_relocation_state(node_id);
   graph_nodes_.erase(node_id);
 }
 
@@ -1799,6 +1828,68 @@ bool MissionFsmNode::find_safer_node_position(const geometry_msgs::msg::Point &c
     safe_out = best;
   }
   return improved;
+}
+
+bool MissionFsmNode::find_alternate_position_for_node(
+    int node_id, geometry_msgs::msg::Point &candidate_out) {
+  const auto node_it = graph_nodes_.find(node_id);
+  if (node_it == graph_nodes_.end()) {
+    return false;
+  }
+
+  auto origin_it = node_relocation_origin_.find(node_id);
+  if (origin_it == node_relocation_origin_.end()) {
+    node_relocation_origin_[node_id] = node_it->second.position;
+    origin_it = node_relocation_origin_.find(node_id);
+  }
+  const auto &origin = origin_it->second;
+
+  static constexpr std::array<double, 5> kSearchRadii{{2.0, 4.0, 6.0, 8.0, 10.0}};
+  static constexpr int kAngleSamples = 16;
+  const double kPi = std::acos(-1.0);
+
+  auto &attempt_counter = node_relocation_attempts_[node_id];
+  const int total_candidates =
+      static_cast<int>(kSearchRadii.size()) * kAngleSamples;
+
+  for (int idx = attempt_counter; idx < total_candidates; ++idx) {
+    const int radius_idx = idx / kAngleSamples;
+    const int angle_idx = idx % kAngleSamples;
+    const double theta =
+        2.0 * kPi * static_cast<double>(angle_idx) / static_cast<double>(kAngleSamples);
+
+    geometry_msgs::msg::Point candidate = origin;
+    candidate.x += kSearchRadii[radius_idx] * std::cos(theta);
+    candidate.y += kSearchRadii[radius_idx] * std::sin(theta);
+
+    bool too_close_to_other_node = false;
+    const double node_separation = std::max(1.0, nodes_distance_ * 0.5);
+    for (const auto &entry : graph_nodes_) {
+      if (entry.first == node_id) {
+        continue;
+      }
+      if (calculate_distance(candidate, entry.second.position) < node_separation) {
+        too_close_to_other_node = true;
+        break;
+      }
+    }
+
+    if (too_close_to_other_node) {
+      continue;
+    }
+
+    attempt_counter = idx + 1;
+    candidate_out = candidate;
+    return true;
+  }
+
+  attempt_counter = total_candidates;
+  return false;
+}
+
+void MissionFsmNode::clear_node_relocation_state(int node_id) {
+  node_relocation_origin_.erase(node_id);
+  node_relocation_attempts_.erase(node_id);
 }
 
 void MissionFsmNode::register_potential_node_for_anchor(const geometry_msgs::msg::Point &candidate) {

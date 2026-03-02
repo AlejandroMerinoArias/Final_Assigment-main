@@ -148,6 +148,9 @@ private:
   bool is_within_node_distance_of_any_node(const geometry_msgs::msg::Point &pos) const;
   bool find_safer_node_position(const geometry_msgs::msg::Point &center,
                                 geometry_msgs::msg::Point &safe_out) const;
+  bool find_alternate_position_for_node(int node_id,
+                                        geometry_msgs::msg::Point &candidate_out);
+  void clear_node_relocation_state(int node_id);
   void mark_potential_node_unreachable_near(const geometry_msgs::msg::Point &pos);
 
   struct PotentialNode {
@@ -284,6 +287,8 @@ private:
   bool force_explorer_until_new_node_ = false;
   int fallback_origin_node_id_ = -1;
   uint64_t explorer_request_epoch_ = 0;
+  std::unordered_map<int, geometry_msgs::msg::Point> node_relocation_origin_;
+  std::unordered_map<int, int> node_relocation_attempts_;
 };
 
 } // namespace control
