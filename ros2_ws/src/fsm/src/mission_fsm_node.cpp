@@ -827,11 +827,14 @@ void MissionFsmNode::update_state() {
 
     // Mid-flight replanning: every replan_interval_s_ seconds while flying
     // toward a goal, ask the planner to recompute from the current position.
-    if (goal_active_) {
+    if (goal_active_ && active_goal_source_ != GoalSource::TRAVEL) {
       double time_since_replan = (this->now() - last_replan_time_).seconds();
       if (time_since_replan >= replan_interval_s_) {
         replan_current_goal();
       }
+    } else if (goal_active_ && active_goal_source_ == GoalSource::TRAVEL) {
+      RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 3000,
+                            "Travel mode active: keeping single published RRT goal (no periodic replan).");
     }
     break;
 
