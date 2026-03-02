@@ -134,6 +134,7 @@ private:
   bool pop_next_potential_for_node(int node_id, geometry_msgs::msg::Point &goal_out);
   std::vector<int> compute_shortest_path_nodes(int start_node, int goal_node) const;
   void reset_graph_to_entrance();
+  bool is_backtracking_from_single_edge_node(const geometry_msgs::msg::Point &goal) const;
   void prune_potential_nodes_near(const geometry_msgs::msg::Point &pos, double radius);
   void periodic_potential_cleanup();
   double point_to_segment_distance(const geometry_msgs::msg::Point &p,
