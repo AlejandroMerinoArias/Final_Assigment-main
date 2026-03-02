@@ -164,8 +164,9 @@ ExplorationManager::ExplorationManager()
   viz_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
       "/exploration/frontiers_viz", 10);
   // Slice pub removed (not 2.5D anymore), but keeping map_ready
-  map_ready_pub_ =
-      this->create_publisher<std_msgs::msg::Bool>("/exploration/map_ready", 1);
+  map_ready_pub_ = this->create_publisher<std_msgs::msg::Bool>(
+      "/exploration/map_ready",
+      rclcpp::QoS(1).transient_local().reliable());
   
   // Initialize performance logging CSV file
   perf_log_file_.open("/tmp/exploration_performance.csv");
@@ -202,13 +203,16 @@ void ExplorationManager::map_callback(
       // map is available before requesting exploration goals.
       if (!map_ready_ && current_octomap_->size() > 1000u) {
         map_ready_ = true;
-        std_msgs::msg::Bool ready_msg;
-        ready_msg.data = true;
-        map_ready_pub_->publish(ready_msg);
         RCLCPP_INFO(this->get_logger(),
                     "Exploration map marked as READY (nodes=%zu).",
                     current_octomap_->size());
       }
+
+      // Republish map readiness so late subscribers (e.g. FSM restarted after
+      // mapper) always receive the latest state.
+      std_msgs::msg::Bool ready_msg;
+      ready_msg.data = map_ready_;
+      map_ready_pub_->publish(ready_msg);
     }
   } else {
     RCLCPP_WARN(this->get_logger(), "Failed to deserialize OctoMap message.");
