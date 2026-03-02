@@ -4,6 +4,7 @@
 #include <array>
 #include <limits>
 #include <queue>
+#include <functional>
 
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 
@@ -1840,6 +1841,227 @@ double MissionFsmNode::point_to_segment_distance(const geometry_msgs::msg::Point
   return calculate_distance(p, projection);
 }
 
+double MissionFsmNode::projection_parameter_on_segment(const geometry_msgs::msg::Point &p,
+                                                       const geometry_msgs::msg::Point &a,
+                                                       const geometry_msgs::msg::Point &b) const {
+  const double abx = b.x - a.x;
+  const double aby = b.y - a.y;
+  const double abz = b.z - a.z;
+  const double apx = p.x - a.x;
+  const double apy = p.y - a.y;
+  const double apz = p.z - a.z;
+  const double ab_len_sq = abx * abx + aby * aby + abz * abz;
+  if (ab_len_sq < 1e-9) {
+    return 0.0;
+  }
+  return std::clamp((apx * abx + apy * aby + apz * abz) / ab_len_sq, 0.0, 1.0);
+}
+
+void MissionFsmNode::fuse_nearby_checkpoint_nodes() {
+  if (graph_nodes_.size() < 2) {
+    return;
+  }
+
+  std::vector<int> node_ids;
+  node_ids.reserve(graph_nodes_.size());
+  for (const auto &entry : graph_nodes_) {
+    node_ids.push_back(entry.first);
+  }
+
+  std::unordered_map<int, int> parent;
+  for (const int id : node_ids) {
+    parent[id] = id;
+  }
+
+  std::function<int(int)> find_root = [&](int x) {
+    while (parent[x] != x) {
+      parent[x] = parent[parent[x]];
+      x = parent[x];
+    }
+    return x;
+  };
+
+  auto unite = [&](int a, int b) {
+    const int ra = find_root(a);
+    const int rb = find_root(b);
+    if (ra != rb) {
+      parent[rb] = ra;
+    }
+  };
+
+  for (size_t i = 0; i < node_ids.size(); ++i) {
+    for (size_t j = i + 1; j < node_ids.size(); ++j) {
+      const int a = node_ids[i];
+      const int b = node_ids[j];
+      if (calculate_distance(graph_nodes_.at(a).position, graph_nodes_.at(b).position) <= node_radius_) {
+        unite(a, b);
+      }
+    }
+  }
+
+  std::unordered_map<int, std::vector<int>> groups;
+  for (const int id : node_ids) {
+    groups[find_root(id)].push_back(id);
+  }
+
+  std::unordered_map<int, int> remap;
+  std::unordered_map<int, CheckpointNode> rebuilt;
+
+  for (const auto &group_entry : groups) {
+    const auto &members = group_entry.second;
+    if (members.empty()) {
+      continue;
+    }
+
+    int representative = members.front();
+    if (std::find(members.begin(), members.end(), entrance_node_id_) != members.end()) {
+      representative = entrance_node_id_;
+    }
+
+    CheckpointNode merged;
+    merged.id = representative;
+    merged.position = graph_nodes_.at(representative).position;
+
+    double sx = 0.0, sy = 0.0, sz = 0.0;
+    bool any_dead_end = false;
+    bool any_non_provisional = false;
+    std::vector<PotentialNode> merged_potentials;
+
+    for (const int id : members) {
+      remap[id] = representative;
+      const auto &node = graph_nodes_.at(id);
+      sx += node.position.x;
+      sy += node.position.y;
+      sz += node.position.z;
+      any_dead_end = any_dead_end || node.is_dead_end;
+      any_non_provisional = any_non_provisional || !node.is_provisional;
+      merged_potentials.insert(merged_potentials.end(), node.potentials.begin(), node.potentials.end());
+    }
+
+    const double inv = 1.0 / static_cast<double>(members.size());
+    merged.position.x = sx * inv;
+    merged.position.y = sy * inv;
+    merged.position.z = sz * inv;
+    merged.is_dead_end = any_dead_end;
+    merged.is_provisional = !any_non_provisional;
+
+    for (const auto &pot : merged_potentials) {
+      bool duplicate = false;
+      for (const auto &existing : merged.potentials) {
+        if (calculate_distance(existing.position, pot.position) <= node_radius_) {
+          duplicate = true;
+          break;
+        }
+      }
+      if (!duplicate) {
+        merged.potentials.push_back(pot);
+      }
+    }
+
+    rebuilt[representative] = merged;
+  }
+
+  for (const auto &entry : graph_nodes_) {
+    const int from_rep = remap[entry.first];
+    for (const int neigh : entry.second.edges) {
+      if (remap.count(neigh) == 0) {
+        continue;
+      }
+      const int to_rep = remap[neigh];
+      if (from_rep == to_rep) {
+        continue;
+      }
+      rebuilt[from_rep].edges.insert(to_rep);
+      rebuilt[to_rep].edges.insert(from_rep);
+    }
+  }
+
+  auto remap_id = [&](int &id) {
+    if (remap.count(id) > 0) {
+      id = remap[id];
+    }
+  };
+  remap_id(entrance_node_id_);
+  remap_id(last_visited_node_id_);
+  remap_id(current_node_id_);
+  remap_id(previous_node_id_);
+  remap_id(potential_resolution_node_id_);
+  remap_id(active_goal_anchor_node_id_);
+  remap_id(fallback_origin_node_id_);
+
+  for (auto &id : travel_path_) {
+    remap_id(id);
+  }
+  travel_path_.erase(std::unique(travel_path_.begin(), travel_path_.end()), travel_path_.end());
+
+  graph_nodes_ = std::move(rebuilt);
+}
+
+void MissionFsmNode::redistribute_edges_through_nearby_nodes() {
+  if (graph_nodes_.size() < 3) {
+    return;
+  }
+
+  std::set<std::pair<int, int>> unique_edges;
+  for (const auto &entry : graph_nodes_) {
+    for (const int neigh : entry.second.edges) {
+      unique_edges.insert({std::min(entry.first, neigh), std::max(entry.first, neigh)});
+    }
+  }
+
+  for (const auto &edge : unique_edges) {
+    const int a = edge.first;
+    const int b = edge.second;
+    if (graph_nodes_.count(a) == 0 || graph_nodes_.count(b) == 0) {
+      continue;
+    }
+
+    std::vector<std::pair<double, int>> split_nodes;
+    for (const auto &entry : graph_nodes_) {
+      const int c = entry.first;
+      if (c == a || c == b) {
+        continue;
+      }
+      const double dist = point_to_segment_distance(entry.second.position,
+                                                    graph_nodes_.at(a).position,
+                                                    graph_nodes_.at(b).position);
+      if (dist <= node_radius_) {
+        const double t = projection_parameter_on_segment(entry.second.position,
+                                                         graph_nodes_.at(a).position,
+                                                         graph_nodes_.at(b).position);
+        split_nodes.push_back({t, c});
+      }
+    }
+
+    if (split_nodes.empty()) {
+      continue;
+    }
+
+    std::sort(split_nodes.begin(), split_nodes.end(),
+              [](const auto &lhs, const auto &rhs) { return lhs.first < rhs.first; });
+
+    graph_nodes_[a].edges.erase(b);
+    graph_nodes_[b].edges.erase(a);
+
+    int previous = a;
+    for (const auto &split_entry : split_nodes) {
+      const int node_id = split_entry.second;
+      add_edge_between_nodes(previous, node_id);
+      previous = node_id;
+    }
+    add_edge_between_nodes(previous, b);
+  }
+}
+
+void MissionFsmNode::simplify_checkpoint_graph() {
+  if (graph_nodes_.size() < 2) {
+    return;
+  }
+  fuse_nearby_checkpoint_nodes();
+  redistribute_edges_through_nearby_nodes();
+  prune_potentials_within_node_distance_recursive();
+}
+
 bool MissionFsmNode::is_potential_valid_global(const geometry_msgs::msg::Point &candidate) const {
   for (const auto &entry : graph_nodes_) {
     // "Within node_distance" must include points exactly on the threshold.
@@ -2206,6 +2428,14 @@ void MissionFsmNode::update_checkpoint_graph() {
   if (entered_node) {
     if (last_visited_node_id_ >= 0 && last_visited_node_id_ != current_node_id_) {
       add_edge_between_nodes(last_visited_node_id_, current_node_id_);
+    }
+
+    simplify_checkpoint_graph();
+
+    const auto remapped_containing = find_node_containing_position(current_pose_.position);
+    current_node_id_ = remapped_containing.value_or(current_node_id_);
+    if (last_visited_node_id_ >= 0 && graph_nodes_.count(last_visited_node_id_) == 0) {
+      last_visited_node_id_ = current_node_id_;
     }
 
     if (last_visited_node_id_ == current_node_id_) {
