@@ -708,7 +708,8 @@ void MissionFsmNode::update_state() {
                       next_node_id);
           try_activate_exploration_goal(graph_nodes_.at(next_node_id).position);
         }
-      } else if (macroplanning_enabled_ && potential_resolution_node_id_ >= 0) {
+      } else if (macroplanning_enabled_ && potential_resolution_node_id_ >= 0 &&
+                 current_node_id_ == potential_resolution_node_id_) {
         geometry_msgs::msg::Point potential_goal;
         if (pop_next_potential_for_node(potential_resolution_node_id_, potential_goal)) {
           RCLCPP_INFO(this->get_logger(),
@@ -1352,6 +1353,27 @@ std::optional<int> MissionFsmNode::find_node_containing_position(const geometry_
 
 int MissionFsmNode::create_checkpoint_node(const geometry_msgs::msg::Point &pos, bool is_entrance,
                                            bool is_provisional) {
+  int nearest_existing_id = -1;
+  double nearest_existing_dist = std::numeric_limits<double>::max();
+  for (const auto &entry : graph_nodes_) {
+    const double d = calculate_distance(entry.second.position, pos);
+    if (d <= nodes_distance_ && d < nearest_existing_dist) {
+      nearest_existing_dist = d;
+      nearest_existing_id = entry.first;
+    }
+  }
+
+  if (nearest_existing_id >= 0) {
+    auto &existing = graph_nodes_[nearest_existing_id];
+    if (!is_provisional) {
+      existing.is_provisional = false;
+    }
+    if (is_entrance) {
+      existing.is_dead_end = true;
+    }
+    return nearest_existing_id;
+  }
+
   const int node_id = next_node_id_++;
   CheckpointNode node;
   node.id = node_id;
@@ -1636,6 +1658,9 @@ void MissionFsmNode::update_mode_decision() {
 
   std::vector<int> single_edge_nodes;
   for (const auto &entry : graph_nodes_) {
+    if (entry.first == entrance_node_id_) {
+      continue;
+    }
     const auto degree = entry.second.edges.size() + (entry.second.is_dead_end ? 1 : 0);
     if (degree == 1) {
       single_edge_nodes.push_back(entry.first);
@@ -1684,10 +1709,11 @@ void MissionFsmNode::update_mode_decision() {
   }
 
   potential_resolution_node_id_ = -1;
-  const bool in_node_with_one_edge = (current_node_id_ >= 0 && graph_nodes_.count(current_node_id_) > 0 &&
+  const bool in_node_with_one_edge = (current_node_id_ >= 0 && current_node_id_ != entrance_node_id_ && graph_nodes_.count(current_node_id_) > 0 &&
                                       (graph_nodes_[current_node_id_].edges.size() + (graph_nodes_[current_node_id_].is_dead_end ? 1 : 0) == 1));
   const bool outside_node = (current_node_id_ < 0);
-  const bool last_has_one_edge = (graph_nodes_[last_visited_node_id_].edges.size() + (graph_nodes_[last_visited_node_id_].is_dead_end ? 1 : 0) == 1);
+  const bool last_has_one_edge = (last_visited_node_id_ != entrance_node_id_ &&
+                                (graph_nodes_[last_visited_node_id_].edges.size() + (graph_nodes_[last_visited_node_id_].is_dead_end ? 1 : 0) == 1));
 
   if (in_node_with_one_edge || (outside_node && last_has_one_edge)) {
     travel_mode_ = false;
