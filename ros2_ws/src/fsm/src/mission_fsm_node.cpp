@@ -538,8 +538,9 @@ void MissionFsmNode::on_state_enter(MissionState state) {
       active_goal_anchor_node_id_ = -1;
       goal_request_pending_ = false;
       // Reset goal-selection tracking when (re)entering exploration
-      consecutive_goal_request_failures_ = 0;
+      reset_explorer_goal_filters();
       last_successful_exploration_goal_time_ = this->now();
+      reset_explorer_filters_on_next_goal_ = false;
       if (macroplanning_enabled_ && entrance_node_id_ < 0) {
         entrance_node_id_ = create_checkpoint_node(cave_entrance_, true);
         last_visited_node_id_ = entrance_node_id_;
@@ -827,14 +828,16 @@ void MissionFsmNode::update_state() {
 
     // Mid-flight replanning: every replan_interval_s_ seconds while flying
     // toward a goal, ask the planner to recompute from the current position.
-    if (goal_active_ && active_goal_source_ != GoalSource::TRAVEL) {
+    if (goal_active_ && active_goal_source_ == GoalSource::EXPLORER) {
       double time_since_replan = (this->now() - last_replan_time_).seconds();
       if (time_since_replan >= replan_interval_s_) {
         replan_current_goal();
       }
-    } else if (goal_active_ && active_goal_source_ == GoalSource::TRAVEL) {
+    } else if (goal_active_ &&
+               (active_goal_source_ == GoalSource::TRAVEL ||
+                active_goal_source_ == GoalSource::POTENTIAL)) {
       RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 3000,
-                            "Travel mode active: keeping single published RRT goal (no periodic replan).");
+                            "Macroplanning goal active: keeping single published RRT goal (no periodic replan).");
     }
     break;
 
@@ -1297,10 +1300,24 @@ void MissionFsmNode::build_z_retry_altitudes(double center_z) {
   }
 }
 
+void MissionFsmNode::reset_explorer_goal_filters() {
+  consecutive_too_close_rejections_ = 0;
+  consecutive_goal_request_failures_ = 0;
+}
+
 bool MissionFsmNode::try_activate_exploration_goal(const geometry_msgs::msg::Point &goal,
                                                    bool allow_close_goal,
                                                    GoalSource source,
                                                    int anchor_node_id) {
+  if (source != GoalSource::EXPLORER) {
+    reset_explorer_filters_on_next_goal_ = true;
+  } else if (reset_explorer_filters_on_next_goal_) {
+    RCLCPP_INFO(this->get_logger(),
+                "Returning to explorer goaling after macroplanning mode. Resetting exploration-goal filters.");
+    reset_explorer_goal_filters();
+    reset_explorer_filters_on_next_goal_ = false;
+  }
+
   build_z_retry_altitudes(goal.z);
   z_retry_index_ = 0;
   if (z_retry_altitudes_.empty()) {
@@ -1344,7 +1361,7 @@ bool MissionFsmNode::try_activate_exploration_goal(const geometry_msgs::msg::Poi
   goal_set_time_ = this->now();
   last_pose_at_goal_set_ = current_pose_.position;
 
-  if (travel_mode_) {
+  if (travel_mode_ || source == GoalSource::POTENTIAL || source == GoalSource::TRAVEL) {
     planner_goal_pub_->publish(planner_goal);
   } else if (planner_type_ == "A_star") {
     planner_goal_pub_a_->publish(planner_goal);
