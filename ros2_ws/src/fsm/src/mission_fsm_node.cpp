@@ -264,10 +264,12 @@ void MissionFsmNode::planner_status_callback(
 
     goal_active_ = false;
 
-    // If we're exploring, trigger the Z-retry recovery
+    // If we're exploring, trigger the Z-retry recovery for the *current* goal.
+    // Using start_refine_for_current_goal() keeps strategic_goal_ synchronized
+    // with the failing planner target (important for travel-mode goals).
     if (current_state_ == MissionState::EXPLORE ||
         current_state_ == MissionState::REFINE_GOAL) {
-      transition_to(MissionState::REFINE_GOAL);
+      start_refine_for_current_goal("planner reported PLAN_FAILED");
     }
   }
 }
@@ -633,6 +635,20 @@ void MissionFsmNode::update_state() {
                     "(distance=%.2f m, took %.1f s). Requesting next goal.",
                     current_goal_.x, current_goal_.y, current_goal_.z,
                     dist, time_since_goal_set);
+
+        // In travel mode, consume the front checkpoint only when we actually
+        // reach it (not when activation succeeds). This keeps the queue intact
+        // if planning fails and a retry is needed.
+        if (macroplanning_enabled_ && travel_mode_ && !travel_path_.empty()) {
+          const int reached_node_id = travel_path_.front();
+          if (graph_nodes_.count(reached_node_id) > 0 &&
+              calculate_distance(current_pose_.position,
+                                 graph_nodes_.at(reached_node_id).position) <=
+                  GOAL_REACHED_THRESHOLD) {
+            travel_path_.pop_front();
+          }
+        }
+
         goal_active_ = false;
         consecutive_too_close_rejections_ = 0;  // Reset counter on successful goal completion
         // Loop will trigger new request in next block
@@ -701,12 +717,14 @@ void MissionFsmNode::update_state() {
     if (!goal_active_ && !goal_request_pending_) {
       if (macroplanning_enabled_ && travel_mode_ && !travel_path_.empty()) {
         const int next_node_id = travel_path_.front();
-        travel_path_.pop_front();
         if (graph_nodes_.count(next_node_id) > 0) {
           RCLCPP_INFO(this->get_logger(),
                       "Travel mode: traversing to checkpoint node %d.",
                       next_node_id);
-          try_activate_exploration_goal(graph_nodes_.at(next_node_id).position);
+          try_activate_exploration_goal(graph_nodes_.at(next_node_id).position,
+                                        true);
+        } else {
+          travel_path_.pop_front();
         }
       } else if (macroplanning_enabled_ && potential_resolution_node_id_ >= 0 &&
                  current_node_id_ == potential_resolution_node_id_) {
@@ -715,7 +733,7 @@ void MissionFsmNode::update_state() {
           RCLCPP_INFO(this->get_logger(),
                       "Resolving potential node from anchor %d.",
                       potential_resolution_node_id_);
-          try_activate_exploration_goal(potential_goal);
+          try_activate_exploration_goal(potential_goal, true);
         }
       } else if (exploration_map_ready_) {
         request_exploration_goal();
@@ -1195,7 +1213,8 @@ void MissionFsmNode::build_z_retry_altitudes(double center_z) {
   }
 }
 
-bool MissionFsmNode::try_activate_exploration_goal(const geometry_msgs::msg::Point &goal) {
+bool MissionFsmNode::try_activate_exploration_goal(const geometry_msgs::msg::Point &goal,
+                                                   bool allow_close_goal) {
   build_z_retry_altitudes(goal.z);
   z_retry_index_ = 0;
   if (z_retry_altitudes_.empty()) {
@@ -1213,7 +1232,7 @@ bool MissionFsmNode::try_activate_exploration_goal(const geometry_msgs::msg::Poi
   double goal_dist = std::hypot(planner_goal.pose.position.x - current_pose_.position.x,
                                 planner_goal.pose.position.y - current_pose_.position.y);
 
-  if (goal_dist < min_exploration_goal_distance_) {
+  if (!allow_close_goal && goal_dist < min_exploration_goal_distance_) {
     ++consecutive_too_close_rejections_;
     if (consecutive_too_close_rejections_ < MAX_CONSECUTIVE_TOO_CLOSE_REJECTIONS) {
       RCLCPP_WARN(this->get_logger(),
@@ -1458,13 +1477,10 @@ void MissionFsmNode::register_potential_node_for_anchor(const geometry_msgs::msg
   }
 
   auto &anchor = graph_nodes_[last_visited_node_id_];
-  if (calculate_distance(anchor.position, candidate) < nodes_distance_) {
-    return;
-  }
-
-  for (const int neigh : anchor.edges) {
-    if (graph_nodes_.count(neigh) > 0 &&
-        calculate_distance(graph_nodes_[neigh].position, candidate) < nodes_distance_) {
+  // Reject any potential candidate that falls inside the node-spacing threshold
+  // of *any* existing checkpoint node (not only anchor/adjacent nodes).
+  for (const auto &entry : graph_nodes_) {
+    if (calculate_distance(entry.second.position, candidate) < nodes_distance_) {
       return;
     }
   }
