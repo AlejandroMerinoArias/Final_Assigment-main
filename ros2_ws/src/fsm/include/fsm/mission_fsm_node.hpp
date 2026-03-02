@@ -116,8 +116,11 @@ private:
   void replan_current_goal();
   void start_refine_for_current_goal(const std::string &reason);
   void build_z_retry_altitudes(double center_z);
+  enum class GoalSource { EXPLORER, TRAVEL, POTENTIAL };
   bool try_activate_exploration_goal(const geometry_msgs::msg::Point &goal,
-                                     bool allow_close_goal = false);
+                                     bool allow_close_goal = false,
+                                     GoalSource source = GoalSource::EXPLORER,
+                                     int anchor_node_id = -1);
   bool is_inside_node(int node_id, const geometry_msgs::msg::Point &pos) const;
   std::optional<int> find_node_containing_position(const geometry_msgs::msg::Point &pos) const;
   int create_checkpoint_node(const geometry_msgs::msg::Point &pos, bool is_entrance = false,
@@ -260,6 +263,10 @@ private:
   bool latest_seen_point_valid_ = false;
   rclcpp::Time latest_seen_point_stamp_;
   double seen_point_timeout_s_ = 1.0;
+  GoalSource active_goal_source_ = GoalSource::EXPLORER;
+  int active_goal_anchor_node_id_ = -1;
+  bool force_explorer_until_new_node_ = false;
+  int fallback_origin_node_id_ = -1;
 };
 
 } // namespace control
