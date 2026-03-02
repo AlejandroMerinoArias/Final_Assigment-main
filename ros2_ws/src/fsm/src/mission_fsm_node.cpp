@@ -69,6 +69,10 @@ MissionFsmNode::MissionFsmNode()
   potential_angle_threshold_deg_ = this->get_parameter("potential_angle_threshold_deg").as_double();
   this->declare_parameter("seen_point_timeout_s", seen_point_timeout_s_);
   seen_point_timeout_s_ = this->get_parameter("seen_point_timeout_s").as_double();
+  this->declare_parameter("goal_request_timeout_s", goal_request_timeout_s_);
+  goal_request_timeout_s_ = this->get_parameter("goal_request_timeout_s").as_double();
+  this->declare_parameter("force_explorer_timeout_s", force_explorer_timeout_s_);
+  force_explorer_timeout_s_ = this->get_parameter("force_explorer_timeout_s").as_double();
 
   // Cave entrance - Main entrance
   cave_entrance_.x = -320.0;
@@ -155,6 +159,8 @@ MissionFsmNode::MissionFsmNode()
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
   RCLCPP_INFO(this->get_logger(), "Mission FSM Node initialized. State: INIT");
+  goal_request_sent_time_ = this->now();
+  force_explorer_start_time_ = this->now();
   publish_state();
 }
 
@@ -793,6 +799,7 @@ void MissionFsmNode::update_state() {
           travel_path_.clear();
           force_explorer_until_new_node_ = true;
           fallback_origin_node_id_ = last_visited_node_id_;
+          force_explorer_start_time_ = this->now();
           break;
         }
 
@@ -814,6 +821,20 @@ void MissionFsmNode::update_state() {
                        "(%.2f m closer, %.2f m remaining).",
                        movement_since_goal, progress_toward_goal, dist);
         }
+      }
+    }
+
+    // Recover from request deadlock: if an async goal request remains pending too long,
+    // clear the latch so a fresh request can be issued.
+    if (goal_request_pending_ && goal_request_timeout_s_ > 0.0) {
+      const double pending_age = (this->now() - goal_request_sent_time_).seconds();
+      if (pending_age > goal_request_timeout_s_) {
+        RCLCPP_WARN(this->get_logger(),
+                    "Exploration goal request timed out after %.1f s. Clearing pending latch.",
+                    pending_age);
+        goal_request_pending_ = false;
+        ++explorer_request_epoch_;
+        ++consecutive_goal_request_failures_;
       }
     }
 
@@ -844,8 +865,14 @@ void MissionFsmNode::update_state() {
           RCLCPP_INFO(this->get_logger(),
                       "Travel mode: traversing to checkpoint node %d.",
                       next_node_id);
-          try_activate_exploration_goal(graph_nodes_.at(next_node_id).position,
-                                        true, GoalSource::TRAVEL, -1);
+          if (!try_activate_exploration_goal(graph_nodes_.at(next_node_id).position,
+                                            true, GoalSource::TRAVEL, -1)) {
+            RCLCPP_WARN(this->get_logger(),
+                        "Failed to activate travel checkpoint node %d. Skipping node.",
+                        next_node_id);
+            clear_node_relocation_state(next_node_id);
+            travel_path_.pop_front();
+          }
         } else {
           travel_path_.pop_front();
         }
@@ -856,9 +883,14 @@ void MissionFsmNode::update_state() {
           RCLCPP_INFO(this->get_logger(),
                       "Resolving potential node from anchor %d.",
                       potential_resolution_node_id_);
-          try_activate_exploration_goal(potential_goal, true,
-                                        GoalSource::POTENTIAL,
-                                        potential_resolution_node_id_);
+          if (!try_activate_exploration_goal(potential_goal, true,
+                                            GoalSource::POTENTIAL,
+                                            potential_resolution_node_id_)) {
+            RCLCPP_WARN(this->get_logger(),
+                        "Failed to activate potential goal for anchor %d. Requesting explorer goal.",
+                        potential_resolution_node_id_);
+            potential_resolution_node_id_ = -1;
+          }
         }
       } else if (exploration_map_ready_) {
         request_exploration_goal();
@@ -1489,6 +1521,7 @@ void MissionFsmNode::request_exploration_goal() {
     RCLCPP_WARN_THROTTLE(
         this->get_logger(), *this->get_clock(), 2000,
         "Exploration service not available yet... Retrying soon.");
+    ++consecutive_goal_request_failures_;
     return;
   }
 
@@ -1500,6 +1533,7 @@ void MissionFsmNode::request_exploration_goal() {
 
   // Set flag to prevent duplicate requests
   goal_request_pending_ = true;
+  goal_request_sent_time_ = this->now();
   const uint64_t request_epoch = explorer_request_epoch_;
 
   // Async call with callback
@@ -1517,7 +1551,16 @@ void MissionFsmNode::request_exploration_goal() {
           return;
         }
 
-        auto response = future.get();
+        std::shared_ptr<exploring::srv::GetExplorationGoal::Response> response;
+        try {
+          response = future.get();
+        } catch (const std::exception &ex) {
+          RCLCPP_ERROR(this->get_logger(),
+                       "Exploration goal service call threw exception: %s",
+                       ex.what());
+          ++consecutive_goal_request_failures_;
+          return;
+        }
 
         if (!response->success) {
           RCLCPP_WARN(this->get_logger(), "Exploration goal request failed: %s",
@@ -2167,12 +2210,20 @@ void MissionFsmNode::update_mode_decision() {
   if (force_explorer_until_new_node_) {
     const bool reached_new_node =
         (current_node_id_ >= 0 && current_node_id_ != fallback_origin_node_id_);
-    if (!reached_new_node) {
+    const bool fallback_timed_out =
+        (force_explorer_timeout_s_ > 0.0) &&
+        ((this->now() - force_explorer_start_time_).seconds() > force_explorer_timeout_s_);
+    if (!reached_new_node && !fallback_timed_out) {
       travel_mode_ = false;
       potential_resolution_node_id_ = -1;
       travel_path_.clear();
       resume_explorer_mode_after_travel();
       return;
+    }
+    if (fallback_timed_out && !reached_new_node) {
+      RCLCPP_WARN(this->get_logger(),
+                  "Forced explorer fallback timed out after %.1f s. Re-enabling macroplanning travel decisions.",
+                  force_explorer_timeout_s_);
     }
     force_explorer_until_new_node_ = false;
     fallback_origin_node_id_ = -1;

@@ -286,7 +286,11 @@ private:
   bool reset_explorer_filters_on_next_goal_ = false;
   bool force_explorer_until_new_node_ = false;
   int fallback_origin_node_id_ = -1;
+  rclcpp::Time force_explorer_start_time_;
+  double force_explorer_timeout_s_ = 20.0;
   uint64_t explorer_request_epoch_ = 0;
+  rclcpp::Time goal_request_sent_time_;
+  double goal_request_timeout_s_ = 4.0;
   std::unordered_map<int, geometry_msgs::msg::Point> node_relocation_origin_;
   std::unordered_map<int, int> node_relocation_attempts_;
 };
