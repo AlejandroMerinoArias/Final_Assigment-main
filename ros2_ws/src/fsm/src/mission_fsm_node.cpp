@@ -1,6 +1,7 @@
 #include "fsm/mission_fsm_node.hpp"
 
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <queue>
 
@@ -287,6 +288,23 @@ void MissionFsmNode::planner_status_callback(
 
     if (current_state_ == MissionState::EXPLORE &&
         active_goal_source_ == GoalSource::TRAVEL) {
+      if (!travel_path_.empty()) {
+        const int blocked_node_id = travel_path_.front();
+        geometry_msgs::msg::Point shifted;
+        if (find_alternative_travel_checkpoint_position(blocked_node_id, shifted)) {
+          RCLCPP_WARN(this->get_logger(),
+                      "Travel node %d appears blocked. Shifting checkpoint from [%.2f, %.2f, %.2f] to [%.2f, %.2f, %.2f] and retrying.",
+                      blocked_node_id,
+                      graph_nodes_[blocked_node_id].position.x,
+                      graph_nodes_[blocked_node_id].position.y,
+                      graph_nodes_[blocked_node_id].position.z,
+                      shifted.x, shifted.y, shifted.z);
+          graph_nodes_[blocked_node_id].position = shifted;
+          try_activate_exploration_goal(shifted, true, GoalSource::TRAVEL, -1);
+          return;
+        }
+      }
+
       RCLCPP_WARN(this->get_logger(),
                   "Travel checkpoint planning failed. Keeping travel mode active and retrying.");
       return;
@@ -1444,6 +1462,22 @@ void MissionFsmNode::request_exploration_goal() {
                     "Received exploration goal: [%.2f, %.2f, %.2f]",
                     strategic_goal_.x, strategic_goal_.y, strategic_goal_.z);
 
+        if (macroplanning_enabled_ &&
+            is_backtracking_from_single_edge_node(strategic_goal_)) {
+          RCLCPP_WARN(this->get_logger(),
+                      "Explorer proposed a regressive goal [%.2f, %.2f, %.2f] near a single-edge node. "
+                      "Blacklisting and requesting a replacement.",
+                      strategic_goal_.x, strategic_goal_.y, strategic_goal_.z);
+          geometry_msgs::msg::PointStamped blacklist_msg;
+          blacklist_msg.header.stamp = this->now();
+          blacklist_msg.header.frame_id = "world";
+          blacklist_msg.point = strategic_goal_;
+          blacklist_goal_pub_->publish(blacklist_msg);
+          ++consecutive_goal_request_failures_;
+          request_exploration_goal();
+          return;
+        }
+
         if (macroplanning_enabled_) {
           register_potential_node_for_anchor(strategic_goal_);
         }
@@ -1712,6 +1746,80 @@ bool MissionFsmNode::find_safer_node_position(const geometry_msgs::msg::Point &c
   return improved;
 }
 
+bool MissionFsmNode::find_alternative_travel_checkpoint_position(
+    int node_id, geometry_msgs::msg::Point &safe_out) const {
+  const auto it = graph_nodes_.find(node_id);
+  if (it == graph_nodes_.end()) {
+    return false;
+  }
+
+  const auto &center = it->second.position;
+
+  auto conflicts_other_node = [&](const geometry_msgs::msg::Point &candidate) {
+    for (const auto &entry : graph_nodes_) {
+      if (entry.first == node_id) {
+        continue;
+      }
+      if (calculate_distance(candidate, entry.second.position) < node_radius_ * 0.6) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  auto clearance_at = [&](const geometry_msgs::msg::Point &candidate) {
+    if (recent_obstacle_points_.empty()) {
+      return std::numeric_limits<double>::infinity();
+    }
+    double min_dist = std::numeric_limits<double>::max();
+    for (const auto &obs : recent_obstacle_points_) {
+      min_dist = std::min(min_dist, calculate_distance(candidate, obs));
+    }
+    return min_dist;
+  };
+
+  geometry_msgs::msg::Point best = center;
+  double best_clearance = clearance_at(center);
+  bool found = false;
+
+  static constexpr double kMaxSearchRadius = 6.0;
+  static constexpr double kRadiusStep = 0.75;
+  static constexpr int kAngleSamples = 24;
+  static constexpr std::array<double, 3> kZOffsets{0.0, 0.5, -0.5};
+  const double kPi = std::acos(-1.0);
+
+  for (double r = kRadiusStep; r <= kMaxSearchRadius + 1e-6; r += kRadiusStep) {
+    for (int i = 0; i < kAngleSamples; ++i) {
+      const double theta = 2.0 * kPi * static_cast<double>(i) /
+                           static_cast<double>(kAngleSamples);
+      for (const double z_offset : kZOffsets) {
+        geometry_msgs::msg::Point candidate = center;
+        candidate.x += r * std::cos(theta);
+        candidate.y += r * std::sin(theta);
+        candidate.z += z_offset;
+
+        if (conflicts_other_node(candidate)) {
+          continue;
+        }
+
+        const double clearance = clearance_at(candidate);
+        if (!found || clearance > best_clearance + 1e-3) {
+          best = candidate;
+          best_clearance = clearance;
+          found = true;
+        }
+      }
+    }
+  }
+
+  if (!found) {
+    return false;
+  }
+
+  safe_out = best;
+  return true;
+}
+
 void MissionFsmNode::register_potential_node_for_anchor(const geometry_msgs::msg::Point &candidate) {
   if (last_visited_node_id_ < 0 || graph_nodes_.count(last_visited_node_id_) == 0) {
     return;
@@ -1868,7 +1976,8 @@ bool MissionFsmNode::is_backtracking_from_single_edge_node(const geometry_msgs::
       anchor_id = current_node_id_;
     }
   }
-  if (anchor_id < 0 && last_visited_node_id_ >= 0 && graph_nodes_.count(last_visited_node_id_) > 0) {
+  if (anchor_id < 0 && last_visited_node_id_ >= 0 &&
+      graph_nodes_.count(last_visited_node_id_) > 0) {
     const auto &node = graph_nodes_.at(last_visited_node_id_);
     const auto degree = node.edges.size() + (node.is_dead_end ? 1 : 0);
     if (last_visited_node_id_ != entrance_node_id_ && degree == 1 && !node.edges.empty()) {
@@ -1888,21 +1997,34 @@ bool MissionFsmNode::is_backtracking_from_single_edge_node(const geometry_msgs::
 
   const double fwd_x = anchor.position.x - predecessor.position.x;
   const double fwd_y = anchor.position.y - predecessor.position.y;
-  const double goal_x = goal.x - anchor.position.x;
-  const double goal_y = goal.y - anchor.position.y;
-
-  const double fwd_norm = std::hypot(fwd_x, fwd_y);
-  const double goal_norm = std::hypot(goal_x, goal_y);
-  if (fwd_norm < 1e-3 || goal_norm < 1e-3) {
+  const double edge_len = std::hypot(fwd_x, fwd_y);
+  if (edge_len < 1e-3) {
     return false;
   }
 
-  const double alignment = (fwd_x * goal_x + fwd_y * goal_y) / (fwd_norm * goal_norm);
-  const bool points_backward = alignment < -0.2;
-  const bool near_predecessor =
-      calculate_distance(goal, predecessor.position) < node_radius_ * 1.2;
+  const double ux = fwd_x / edge_len;
+  const double uy = fwd_y / edge_len;
+  const double goal_dx = goal.x - anchor.position.x;
+  const double goal_dy = goal.y - anchor.position.y;
 
-  return points_backward && near_predecessor;
+  const double signed_progress = goal_dx * ux + goal_dy * uy;
+  const double lateral_x = goal_dx - signed_progress * ux;
+  const double lateral_y = goal_dy - signed_progress * uy;
+  const double lateral_offset = std::hypot(lateral_x, lateral_y);
+
+  const double goal_to_anchor = std::hypot(goal_dx, goal_dy);
+  const double goal_to_predecessor = calculate_distance(goal, predecessor.position);
+
+  // Regressive goals are those that project behind the single-edge anchor and
+  // remain in the predecessor corridor (or are explicitly closer to predecessor).
+  const bool in_backward_halfspace = signed_progress < -1.0;
+  const bool in_backtrack_corridor = lateral_offset < std::max(2.0, node_radius_);
+  const bool drifts_toward_predecessor = goal_to_predecessor + 0.5 < goal_to_anchor;
+  const bool very_close_to_predecessor = goal_to_predecessor < node_radius_ * 1.5;
+
+  return in_backward_halfspace &&
+         ((in_backtrack_corridor && drifts_toward_predecessor) ||
+          very_close_to_predecessor);
 }
 
 void MissionFsmNode::update_checkpoint_graph() {
