@@ -34,7 +34,6 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
-#include <utility>
 
 namespace control {
 
@@ -126,18 +125,18 @@ private:
   void remove_checkpoint_node(int node_id);
   void update_checkpoint_graph();
   void update_mode_decision();
-  void register_potential_nodes_for_anchor(const std::vector<geometry_msgs::msg::Point> &candidates);
-  bool resolve_potentials_for_node(int node_id);
+  void register_potential_node_for_anchor(const geometry_msgs::msg::Point &candidate);
+  void promote_potential_node(int anchor_node_id);
+  bool promote_closest_potential_node();
   std::vector<int> compute_shortest_path_nodes(int start_node, int goal_node) const;
   void reset_graph_to_entrance();
   void prune_potential_nodes_near(const geometry_msgs::msg::Point &pos, double radius);
   void mark_potential_node_unreachable_near(const geometry_msgs::msg::Point &pos);
-  bool remove_potential_node_near(const geometry_msgs::msg::Point &pos, double radius);
-  double angle_from_node_xy(const geometry_msgs::msg::Point &node,
-                            const geometry_msgs::msg::Point &target) const;
 
   struct PotentialNode {
     geometry_msgs::msg::Point position;
+    bool valid = false;
+    bool unreachable = false;
   };
 
   struct CheckpointNode {
@@ -146,7 +145,7 @@ private:
     std::set<int> edges;
     bool is_dead_end = false;
     bool is_provisional = false;
-    std::vector<PotentialNode> potentials;
+    PotentialNode potential;
   };
 
   // --- Subscribers ---
@@ -254,7 +253,8 @@ private:
   double node_radius_ = 10.0;
   bool macroplanning_enabled_ = true;
   double max_potential_node_range_ = 60.0;
-  std::vector<geometry_msgs::msg::Point> latest_seen_points_;
+  geometry_msgs::msg::Point latest_seen_point_;
+  bool latest_seen_point_valid_ = false;
   rclcpp::Time latest_seen_point_stamp_;
   double seen_point_timeout_s_ = 1.0;
 };
