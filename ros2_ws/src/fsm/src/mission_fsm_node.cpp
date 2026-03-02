@@ -541,6 +541,8 @@ void MissionFsmNode::on_state_enter(MissionState state) {
       reset_explorer_goal_filters();
       last_successful_exploration_goal_time_ = this->now();
       reset_explorer_filters_on_next_goal_ = false;
+      forward_gate_active_ = false;
+      forward_gate_remaining_goals_ = 0;
       if (macroplanning_enabled_ && entrance_node_id_ < 0) {
         entrance_node_id_ = create_checkpoint_node(cave_entrance_, true);
         last_visited_node_id_ = entrance_node_id_;
@@ -694,6 +696,36 @@ void MissionFsmNode::update_state() {
             const auto degree = graph_nodes_[current_node_id_].edges.size() +
                                 (graph_nodes_[current_node_id_].is_dead_end ? 1 : 0);
             if (degree == 1) {
+              const auto &single_edge_node = graph_nodes_.at(current_node_id_);
+              if (!single_edge_node.edges.empty()) {
+                const int predecessor_id = *single_edge_node.edges.begin();
+                if (graph_nodes_.count(predecessor_id) > 0) {
+                  geometry_msgs::msg::PointStamped blacklist_msg;
+                  blacklist_msg.header.stamp = this->now();
+                  blacklist_msg.header.frame_id = "world";
+                  blacklist_msg.point = graph_nodes_.at(predecessor_id).position;
+                  blacklist_goal_pub_->publish(blacklist_msg);
+
+                  forward_gate_active_ = true;
+                  forward_gate_anchor_ = single_edge_node.position;
+                  forward_gate_normal_.x = single_edge_node.position.x -
+                                           graph_nodes_.at(predecessor_id).position.x;
+                  forward_gate_normal_.y = single_edge_node.position.y -
+                                           graph_nodes_.at(predecessor_id).position.y;
+                  forward_gate_normal_.z = single_edge_node.position.z -
+                                           graph_nodes_.at(predecessor_id).position.z;
+                  forward_gate_remaining_goals_ = 2;
+
+                  RCLCPP_INFO(this->get_logger(),
+                              "Exited travel mode at single-edge node %d. "
+                              "Blacklisting predecessor node %d and enabling forward gate for %d goals.",
+                              current_node_id_, predecessor_id,
+                              forward_gate_remaining_goals_);
+                }
+              }
+
+              force_explorer_until_new_node_ = true;
+              fallback_origin_node_id_ = current_node_id_;
               travel_mode_ = false;
               travel_path_.clear();
             }
@@ -1357,6 +1389,27 @@ bool MissionFsmNode::try_activate_exploration_goal(const geometry_msgs::msg::Poi
     consecutive_too_close_rejections_ = 0;
   }
 
+  if (source == GoalSource::EXPLORER && forward_gate_active_ &&
+      forward_gate_remaining_goals_ > 0) {
+    const double nx = forward_gate_normal_.x;
+    const double ny = forward_gate_normal_.y;
+    const double nz = forward_gate_normal_.z;
+    const double n_norm = std::sqrt(nx * nx + ny * ny + nz * nz);
+    if (n_norm > 1e-6) {
+      const double rx = planner_goal.pose.position.x - forward_gate_anchor_.x;
+      const double ry = planner_goal.pose.position.y - forward_gate_anchor_.y;
+      const double rz = planner_goal.pose.position.z - forward_gate_anchor_.z;
+      const double signed_projection = (rx * nx + ry * ny + rz * nz) / n_norm;
+      if (signed_projection <= 0.0) {
+        RCLCPP_INFO(this->get_logger(),
+                    "Rejecting explorer goal behind single-edge forward gate "
+                    "(projection=%.2f m, remaining gated goals=%d).",
+                    signed_projection, forward_gate_remaining_goals_);
+        return false;
+      }
+    }
+  }
+
   current_goal_ = planner_goal.pose.position;
   goal_set_time_ = this->now();
   last_pose_at_goal_set_ = current_pose_.position;
@@ -1369,6 +1422,15 @@ bool MissionFsmNode::try_activate_exploration_goal(const geometry_msgs::msg::Poi
     planner_goal_pub_->publish(planner_goal);
   }
   goal_active_ = true;
+  if (source == GoalSource::EXPLORER && forward_gate_active_ &&
+      forward_gate_remaining_goals_ > 0) {
+    --forward_gate_remaining_goals_;
+    if (forward_gate_remaining_goals_ <= 0) {
+      forward_gate_active_ = false;
+      RCLCPP_INFO(this->get_logger(),
+                  "Single-edge forward gate exhausted. Returning to normal explorer goaling.");
+    }
+  }
   active_goal_source_ = source;
   active_goal_anchor_node_id_ = anchor_node_id;
 
@@ -1843,6 +1905,8 @@ void MissionFsmNode::reset_graph_to_entrance() {
   travel_mode_ = false;
   potential_resolution_node_id_ = -1;
   travel_path_.clear();
+  forward_gate_active_ = false;
+  forward_gate_remaining_goals_ = 0;
 }
 
 void MissionFsmNode::update_checkpoint_graph() {
