@@ -235,6 +235,7 @@ private:
   int entrance_node_id_ = -1;
   int last_visited_node_id_ = -1;
   int current_node_id_ = -1;
+  int previous_node_id_ = -1;
   bool travel_mode_ = false;
   std::deque<int> travel_path_;
 
