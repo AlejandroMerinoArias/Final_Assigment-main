@@ -750,6 +750,25 @@ void MissionFsmNode::update_state() {
         }
 
         if (macroplanning_enabled_ && active_goal_source_ == GoalSource::POTENTIAL) {
+          const int anchor_node = active_goal_anchor_node_id_;
+          geometry_msgs::msg::Point next_potential_goal;
+          if (anchor_node >= 0 &&
+              pop_next_potential_for_node(anchor_node, next_potential_goal)) {
+            RCLCPP_INFO(this->get_logger(),
+                        "Potential goal reached. Continuing potential-resolution queue for anchor %d.",
+                        anchor_node);
+            if (try_activate_exploration_goal(next_potential_goal, true,
+                                              GoalSource::POTENTIAL,
+                                              anchor_node)) {
+              break;
+            }
+
+            RCLCPP_WARN(this->get_logger(),
+                        "Failed to activate next potential goal for anchor %d. "
+                        "Stopping potential resolution for this anchor.",
+                        anchor_node);
+          }
+
           potential_resolution_node_id_ = -1;
           travel_mode_ = false;
         }
@@ -772,6 +791,30 @@ void MissionFsmNode::update_state() {
                     dist, GOAL_REACHED_THRESHOLD);
         start_refine_for_current_goal("goal timeout");
         break;
+      }
+      // THIRD: Check if drone is stuck (not making progress toward goal)
+      else if (time_since_goal_set > GOAL_TIMEOUT_SECONDS &&
+               active_goal_source_ == GoalSource::POTENTIAL) {
+        const int anchor_node = active_goal_anchor_node_id_;
+        RCLCPP_WARN(this->get_logger(),
+                    "Potential goal timeout (%.1f s > %.1f s) for anchor %d. "
+                    "Removing timed-out potential and continuing.",
+                    time_since_goal_set, GOAL_TIMEOUT_SECONDS, anchor_node);
+        goal_active_ = false;
+
+        geometry_msgs::msg::Point next_potential_goal;
+        if (anchor_node >= 0 &&
+            pop_next_potential_for_node(anchor_node, next_potential_goal) &&
+            try_activate_exploration_goal(next_potential_goal, true,
+                                          GoalSource::POTENTIAL,
+                                          anchor_node)) {
+          break;
+        }
+
+        potential_resolution_node_id_ = -1;
+        travel_mode_ = false;
+        active_goal_source_ = GoalSource::EXPLORER;
+        active_goal_anchor_node_id_ = -1;
       }
       // THIRD: Check if drone is stuck (not making progress toward goal)
       else if (time_since_goal_set > STUCK_DETECTION_SECONDS) {  // After 10 seconds, check movement
@@ -1950,6 +1993,13 @@ void MissionFsmNode::clear_node_relocation_state(int node_id) {
 }
 
 void MissionFsmNode::register_potential_node_for_anchor(const geometry_msgs::msg::Point &candidate) {
+  if (current_state_ != MissionState::EXPLORE || travel_mode_ ||
+      potential_resolution_node_id_ >= 0 ||
+      active_goal_source_ == GoalSource::TRAVEL ||
+      active_goal_source_ == GoalSource::POTENTIAL) {
+    return;
+  }
+
   if (last_visited_node_id_ < 0 || graph_nodes_.count(last_visited_node_id_) == 0) {
     return;
   }
