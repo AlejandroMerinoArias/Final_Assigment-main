@@ -191,7 +191,7 @@ private:
   std::vector<geometry_msgs::msg::Pose> detected_lantern_poses_;
   size_t lanterns_found_count_;
   double lantern_dedup_threshold_; // meters
-  static constexpr size_t TARGET_LANTERN_COUNT = 3;
+  static constexpr size_t TARGET_LANTERN_COUNT = 4;
 
   // --- Mission parameters ---
   double takeoff_altitude_;
