@@ -277,6 +277,14 @@ private:
   bool reset_explorer_filters_on_next_goal_ = false;
   bool force_explorer_until_new_node_ = false;
   int fallback_origin_node_id_ = -1;
+
+  // Temporary forward-only gate after leaving travel mode at a single-edge node.
+  // A goal must lie ahead of the tangent plane at the single-edge node for the
+  // next N explorer goals.
+  bool forward_gate_active_ = false;
+  geometry_msgs::msg::Point forward_gate_anchor_;
+  geometry_msgs::msg::Point forward_gate_normal_;
+  int forward_gate_remaining_goals_ = 0;
 };
 
 } // namespace control
