@@ -121,6 +121,7 @@ private:
                                      bool allow_close_goal = false,
                                      GoalSource source = GoalSource::EXPLORER,
                                      int anchor_node_id = -1);
+  void reset_explorer_goal_filters();
   bool is_inside_node(int node_id, const geometry_msgs::msg::Point &pos) const;
   std::optional<int> find_node_containing_position(const geometry_msgs::msg::Point &pos) const;
   int create_checkpoint_node(const geometry_msgs::msg::Point &pos, bool is_entrance = false,
@@ -273,6 +274,7 @@ private:
   std::vector<geometry_msgs::msg::Point> recent_obstacle_points_;
   GoalSource active_goal_source_ = GoalSource::EXPLORER;
   int active_goal_anchor_node_id_ = -1;
+  bool reset_explorer_filters_on_next_goal_ = false;
   bool force_explorer_until_new_node_ = false;
   int fallback_origin_node_id_ = -1;
 };
