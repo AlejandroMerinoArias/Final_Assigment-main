@@ -139,6 +139,9 @@ private:
   double point_to_segment_distance(const geometry_msgs::msg::Point &p,
                                    const geometry_msgs::msg::Point &a,
                                    const geometry_msgs::msg::Point &b) const;
+  bool is_within_node_distance_of_any_node(const geometry_msgs::msg::Point &pos) const;
+  bool find_safer_node_position(const geometry_msgs::msg::Point &center,
+                                geometry_msgs::msg::Point &safe_out) const;
   void mark_potential_node_unreachable_near(const geometry_msgs::msg::Point &pos);
 
   struct PotentialNode {
@@ -267,6 +270,7 @@ private:
   bool latest_seen_point_valid_ = false;
   rclcpp::Time latest_seen_point_stamp_;
   double seen_point_timeout_s_ = 1.0;
+  std::vector<geometry_msgs::msg::Point> recent_obstacle_points_;
   GoalSource active_goal_source_ = GoalSource::EXPLORER;
   int active_goal_anchor_node_id_ = -1;
   bool force_explorer_until_new_node_ = false;

@@ -422,6 +422,9 @@ void MissionFsmNode::depth_points_callback(
   sensor_msgs::PointCloud2ConstIterator<float> iter_x(*msg, "x");
   sensor_msgs::PointCloud2ConstIterator<float> iter_y(*msg, "y");
   sensor_msgs::PointCloud2ConstIterator<float> iter_z(*msg, "z");
+  recent_obstacle_points_.clear();
+  recent_obstacle_points_.reserve(256);
+  size_t sample_counter = 0;
 
   for (; iter_x != iter_x.end(); ++iter_x, ++iter_y, ++iter_z) {
     const float x = *iter_x;
@@ -439,6 +442,12 @@ void MissionFsmNode::depth_points_callback(
     const double d = calculate_distance(candidate, current_pose_.position);
     if (d > max_potential_node_range_) {
       continue;
+    }
+
+    // Keep a lightweight, periodically sampled obstacle set for safer
+    // checkpoint placement decisions.
+    if ((sample_counter++ % 20u) == 0u) {
+      recent_obstacle_points_.push_back(candidate);
     }
 
     if (!found || d > best_dist) {
@@ -1459,13 +1468,14 @@ int MissionFsmNode::create_checkpoint_node(const geometry_msgs::msg::Point &pos,
   }
 
   if (nearest_existing_id >= 0) {
+    // Hard rule: never create a node within nodes_distance_ of another node.
+    // For entrance bootstrap, we still allow reusing the closest existing node.
+    if (!is_entrance) {
+      return -1;
+    }
+
     auto &existing = graph_nodes_[nearest_existing_id];
-    if (!is_provisional) {
-      existing.is_provisional = false;
-    }
-    if (is_entrance) {
-      existing.is_dead_end = true;
-    }
+    existing.is_dead_end = true;
     return nearest_existing_id;
   }
 
@@ -1612,6 +1622,64 @@ void MissionFsmNode::periodic_potential_cleanup() {
                               }),
                pots.end());
   }
+}
+
+bool MissionFsmNode::is_within_node_distance_of_any_node(const geometry_msgs::msg::Point &pos) const {
+  for (const auto &entry : graph_nodes_) {
+    if (calculate_distance(pos, entry.second.position) < nodes_distance_) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool MissionFsmNode::find_safer_node_position(const geometry_msgs::msg::Point &center,
+                                              geometry_msgs::msg::Point &safe_out) const {
+  if (recent_obstacle_points_.empty()) {
+    return false;
+  }
+
+  auto clearance_at = [&](const geometry_msgs::msg::Point &candidate) {
+    double min_dist = std::numeric_limits<double>::max();
+    for (const auto &obs : recent_obstacle_points_) {
+      min_dist = std::min(min_dist, calculate_distance(candidate, obs));
+    }
+    return min_dist;
+  };
+
+  geometry_msgs::msg::Point best = center;
+  double best_clearance = clearance_at(center);
+  bool improved = false;
+
+  static constexpr double kMaxSearchRadius = 5.0;
+  static constexpr double kRadiusStep = 1.0;
+  static constexpr int kAngleSamples = 16;
+  const double kPi = std::acos(-1.0);
+
+  for (double r = kRadiusStep; r <= kMaxSearchRadius + 1e-6; r += kRadiusStep) {
+    for (int i = 0; i < kAngleSamples; ++i) {
+      const double theta = 2.0 * kPi * static_cast<double>(i) / static_cast<double>(kAngleSamples);
+      geometry_msgs::msg::Point candidate = center;
+      candidate.x += r * std::cos(theta);
+      candidate.y += r * std::sin(theta);
+
+      if (is_within_node_distance_of_any_node(candidate)) {
+        continue;
+      }
+
+      const double clearance = clearance_at(candidate);
+      if (clearance > best_clearance) {
+        best = candidate;
+        best_clearance = clearance;
+        improved = true;
+      }
+    }
+  }
+
+  if (improved) {
+    safe_out = best;
+  }
+  return improved;
 }
 
 void MissionFsmNode::register_potential_node_for_anchor(const geometry_msgs::msg::Point &candidate) {
@@ -1786,9 +1854,13 @@ void MissionFsmNode::update_checkpoint_graph() {
       if (last_visited_node_id_ == entrance_node_id_ && current_node_id_ < 0) {
         const double d = calculate_distance(graph_nodes_[entrance_node_id_].position,
                                             current_pose_.position);
-        if (d >= nodes_distance_) {
-          const int new_node = create_checkpoint_node(current_pose_.position, false);
-          if (new_node != entrance_node_id_) {
+        if (d >= nodes_distance_ &&
+            !is_within_node_distance_of_any_node(current_pose_.position)) {
+          geometry_msgs::msg::Point node_candidate = current_pose_.position;
+          find_safer_node_position(current_pose_.position, node_candidate);
+
+          const int new_node = create_checkpoint_node(node_candidate, false);
+          if (new_node >= 0 && new_node != entrance_node_id_) {
             add_edge_between_nodes(entrance_node_id_, new_node);
             last_visited_node_id_ = new_node;
             current_node_id_ = new_node;
@@ -1826,8 +1898,15 @@ void MissionFsmNode::update_checkpoint_graph() {
   if (current_node_id_ < 0 && last_visited_node_id_ >= 0 && graph_nodes_.count(last_visited_node_id_) > 0) {
     const double d = calculate_distance(graph_nodes_[last_visited_node_id_].position,
                                         current_pose_.position);
-    if (d >= nodes_distance_) {
-      const int new_node = create_checkpoint_node(current_pose_.position, false);
+    if (d >= nodes_distance_ &&
+        !is_within_node_distance_of_any_node(current_pose_.position)) {
+      geometry_msgs::msg::Point node_candidate = current_pose_.position;
+      find_safer_node_position(current_pose_.position, node_candidate);
+
+      const int new_node = create_checkpoint_node(node_candidate, false);
+      if (new_node < 0) {
+        return;
+      }
       add_edge_between_nodes(last_visited_node_id_, new_node);
       last_visited_node_id_ = new_node;
       current_node_id_ = new_node;
