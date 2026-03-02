@@ -88,6 +88,22 @@ Visualization Manager:
         Value: /lantern_marker
       Value: true
     - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: Checkpoint Graph
+      Namespaces:
+        checkpoint_edges: true
+        checkpoint_multi_edge_nodes: true
+        checkpoint_single_edge_nodes: true
+        checkpoint_potential_nodes: true
+        checkpoint_provisional_nodes: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /fsm/checkpoint_markers
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
       Enabled: false
       Name: MarkerArray
       Namespaces:
