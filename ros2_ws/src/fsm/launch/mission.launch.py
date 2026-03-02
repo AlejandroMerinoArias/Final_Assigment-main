@@ -201,7 +201,7 @@ def generate_launch_description():
                 # This is the PRIMARY collision avoidance parameter — it controls
                 # how close the planned flight path can get to walls/obstacles.
                 # Increase this if the drone is still colliding with walls.
-                "robot_radius": 1.5,
+                "robot_radius": 2.0,
                 # Collision check sampling resolution (meters)
                 # Smaller = safer but slower. Should be << robot_radius.
                 # Default 0.1m provides good safety/performance balance.
