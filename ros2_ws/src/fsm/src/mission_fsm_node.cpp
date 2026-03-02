@@ -656,22 +656,6 @@ void MissionFsmNode::update_state() {
       update_mode_decision();
     }
 
-      // If macroplanning forces travel mode while an explorer goal is still
-      // active, stop the explorer command chain immediately. Otherwise the
-      // drone can keep following the stale explorer goal (often behind a
-      // single-edge checkpoint) until timeout/reach, delaying travel-mode
-      // checkpoint traversal.
-      if (travel_mode_ && goal_active_ &&
-          active_goal_source_ == GoalSource::EXPLORER) {
-        RCLCPP_INFO(this->get_logger(),
-                    "Travel mode activated while explorer goal is active. "
-                    "Cancelling stale explorer goal to hand over command "
-                    "chain to travel mode.");
-        cancel_pub_->publish(std_msgs::msg::Empty());
-        goal_active_ = false;
-        active_goal_anchor_node_id_ = -1;
-      }
-
     // Check if we've found all lanterns
     if (lanterns_found_count_ >= TARGET_LANTERN_COUNT) {
       RCLCPP_INFO(this->get_logger(),
@@ -1617,12 +1601,9 @@ double MissionFsmNode::point_to_segment_distance(const geometry_msgs::msg::Point
   return calculate_distance(p, projection);
 }
 
-bool MissionFsmNode::is_potential_too_close_to_graph(
-    const geometry_msgs::msg::Point &candidate) const {
-  for (const auto &node_entry : graph_nodes_) {
-    if (calculate_distance(candidate, node_entry.second.position) < nodes_distance_) {
-      return true;
-    }
+void MissionFsmNode::periodic_potential_cleanup() {
+  if (graph_nodes_.empty()) {
+    return;
   }
 
   std::set<std::pair<int, int>> unique_edges;
@@ -1634,30 +1615,30 @@ bool MissionFsmNode::is_potential_too_close_to_graph(
     }
   }
 
-  for (const auto &edge : unique_edges) {
-    if (graph_nodes_.count(edge.first) == 0 || graph_nodes_.count(edge.second) == 0) {
-      continue;
-    }
-    const auto &from = graph_nodes_.at(edge.first).position;
-    const auto &to = graph_nodes_.at(edge.second).position;
-    if (point_to_segment_distance(candidate, from, to) < nodes_distance_) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-void MissionFsmNode::periodic_potential_cleanup() {
-  if (graph_nodes_.empty()) {
-    return;
-  }
-
   for (auto &entry : graph_nodes_) {
     auto &pots = entry.second.potentials;
     pots.erase(std::remove_if(pots.begin(), pots.end(),
                               [&](const PotentialNode &pot) {
-                                return is_potential_too_close_to_graph(pot.position);
+                                for (const auto &node_entry : graph_nodes_) {
+                                  if (calculate_distance(pot.position, node_entry.second.position) <=
+                                      nodes_distance_) {
+                                    return true;
+                                  }
+                                }
+
+                                for (const auto &edge : unique_edges) {
+                                  if (graph_nodes_.count(edge.first) == 0 ||
+                                      graph_nodes_.count(edge.second) == 0) {
+                                    continue;
+                                  }
+                                  const auto &from = graph_nodes_.at(edge.first).position;
+                                  const auto &to = graph_nodes_.at(edge.second).position;
+                                  if (point_to_segment_distance(pot.position, from, to) <=
+                                      nodes_distance_) {
+                                    return true;
+                                  }
+                                }
+                                return false;
                               }),
                pots.end());
   }
@@ -1727,9 +1708,12 @@ void MissionFsmNode::register_potential_node_for_anchor(const geometry_msgs::msg
   }
 
   auto &anchor = graph_nodes_[last_visited_node_id_];
-  // Active filter: reject potentials too close to any node or graph edge.
-  if (is_potential_too_close_to_graph(candidate)) {
-    return;
+  // Reject any potential candidate that falls inside the node-spacing threshold
+  // of *any* existing checkpoint node (not only anchor/adjacent nodes).
+  for (const auto &entry : graph_nodes_) {
+    if (calculate_distance(entry.second.position, candidate) < nodes_distance_) {
+      return;
+    }
   }
 
   const double candidate_angle = std::atan2(candidate.y - anchor.position.y,

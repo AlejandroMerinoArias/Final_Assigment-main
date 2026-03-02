@@ -137,7 +137,6 @@ private:
   void reset_graph_to_entrance();
   void prune_potential_nodes_near(const geometry_msgs::msg::Point &pos, double radius);
   void periodic_potential_cleanup();
-  bool is_potential_too_close_to_graph(const geometry_msgs::msg::Point &candidate) const;
   double point_to_segment_distance(const geometry_msgs::msg::Point &p,
                                    const geometry_msgs::msg::Point &a,
                                    const geometry_msgs::msg::Point &b) const;
