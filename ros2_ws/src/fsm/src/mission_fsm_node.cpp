@@ -942,51 +942,37 @@ void MissionFsmNode::publish_drone_marker() {
 void MissionFsmNode::publish_checkpoint_markers() {
   visualization_msgs::msg::MarkerArray marker_array;
 
-  visualization_msgs::msg::Marker single_edge_nodes_marker;
-  single_edge_nodes_marker.header.stamp = this->now();
-  single_edge_nodes_marker.header.frame_id = "world";
-  single_edge_nodes_marker.ns = "checkpoint_single_edge_nodes";
-  single_edge_nodes_marker.id = 0;
-  single_edge_nodes_marker.type = visualization_msgs::msg::Marker::SPHERE_LIST;
-  single_edge_nodes_marker.action = visualization_msgs::msg::Marker::ADD;
-  single_edge_nodes_marker.scale.x = 1.6;
-  single_edge_nodes_marker.scale.y = 1.6;
-  single_edge_nodes_marker.scale.z = 1.6;
-  single_edge_nodes_marker.color.r = 1.0;
-  single_edge_nodes_marker.color.g = 0.0;
-  single_edge_nodes_marker.color.b = 0.0;
-  single_edge_nodes_marker.color.a = 1.0;
-
-  visualization_msgs::msg::Marker multi_edge_nodes_marker;
-  multi_edge_nodes_marker.header = single_edge_nodes_marker.header;
-  multi_edge_nodes_marker.ns = "checkpoint_multi_edge_nodes";
-  multi_edge_nodes_marker.id = 1;
-  multi_edge_nodes_marker.type = visualization_msgs::msg::Marker::SPHERE_LIST;
-  multi_edge_nodes_marker.action = visualization_msgs::msg::Marker::ADD;
-  multi_edge_nodes_marker.scale.x = 1.6;
-  multi_edge_nodes_marker.scale.y = 1.6;
-  multi_edge_nodes_marker.scale.z = 1.6;
-  multi_edge_nodes_marker.color.r = 0.0;
-  multi_edge_nodes_marker.color.g = 0.0;
-  multi_edge_nodes_marker.color.b = 1.0;
-  multi_edge_nodes_marker.color.a = 1.0;
+  visualization_msgs::msg::Marker nodes_marker;
+  nodes_marker.header.stamp = this->now();
+  nodes_marker.header.frame_id = "world";
+  nodes_marker.ns = "checkpoint_nodes";
+  nodes_marker.id = 0;
+  nodes_marker.type = visualization_msgs::msg::Marker::SPHERE_LIST;
+  nodes_marker.action = visualization_msgs::msg::Marker::ADD;
+  nodes_marker.scale.x = 1.6;
+  nodes_marker.scale.y = 1.6;
+  nodes_marker.scale.z = 1.6;
+  nodes_marker.color.r = 1.0;
+  nodes_marker.color.g = 1.0;
+  nodes_marker.color.b = 1.0;
+  nodes_marker.color.a = 1.0;
 
   visualization_msgs::msg::Marker edges_marker;
-  edges_marker.header = single_edge_nodes_marker.header;
+  edges_marker.header = nodes_marker.header;
   edges_marker.ns = "checkpoint_edges";
-  edges_marker.id = 2;
+  edges_marker.id = 1;
   edges_marker.type = visualization_msgs::msg::Marker::LINE_LIST;
   edges_marker.action = visualization_msgs::msg::Marker::ADD;
   edges_marker.scale.x = 0.35;
   edges_marker.color.r = 0.0;
-  edges_marker.color.g = 0.0;
-  edges_marker.color.b = 1.0;
+  edges_marker.color.g = 1.0;
+  edges_marker.color.b = 0.0;
   edges_marker.color.a = 1.0;
 
   visualization_msgs::msg::Marker potential_marker;
-  potential_marker.header = single_edge_nodes_marker.header;
+  potential_marker.header = nodes_marker.header;
   potential_marker.ns = "checkpoint_potential_nodes";
-  potential_marker.id = 3;
+  potential_marker.id = 2;
   potential_marker.type = visualization_msgs::msg::Marker::SPHERE_LIST;
   potential_marker.action = visualization_msgs::msg::Marker::ADD;
   potential_marker.scale.x = 1.2;
@@ -1000,12 +986,7 @@ void MissionFsmNode::publish_checkpoint_markers() {
   std::set<std::pair<int, int>> drawn_edges;
   for (const auto &entry : graph_nodes_) {
     const auto &node = entry.second;
-    const size_t degree = node.edges.size() + (node.is_dead_end ? 1u : 0u);
-    if (degree <= 1) {
-      single_edge_nodes_marker.points.push_back(node.position);
-    } else {
-      multi_edge_nodes_marker.points.push_back(node.position);
-    }
+    nodes_marker.points.push_back(node.position);
 
     if (node.potential.valid && !node.potential.unreachable) {
       potential_marker.points.push_back(node.potential.position);
@@ -1025,8 +1006,7 @@ void MissionFsmNode::publish_checkpoint_markers() {
     }
   }
 
-  marker_array.markers.push_back(single_edge_nodes_marker);
-  marker_array.markers.push_back(multi_edge_nodes_marker);
+  marker_array.markers.push_back(nodes_marker);
   marker_array.markers.push_back(edges_marker);
   marker_array.markers.push_back(potential_marker);
   checkpoint_markers_pub_->publish(marker_array);
@@ -1389,13 +1369,10 @@ void MissionFsmNode::update_checkpoint_graph() {
     return;
   }
 
-  previous_node_id_ = current_node_id_;
   const auto containing = find_node_containing_position(current_pose_.position);
   current_node_id_ = containing.value_or(-1);
 
-  const bool entered_node = (current_node_id_ >= 0 && current_node_id_ != previous_node_id_);
-
-  if (entered_node) {
+  if (current_node_id_ >= 0) {
     if (last_visited_node_id_ >= 0 && last_visited_node_id_ != current_node_id_) {
       add_edge_between_nodes(last_visited_node_id_, current_node_id_);
     }
@@ -1405,7 +1382,6 @@ void MissionFsmNode::update_checkpoint_graph() {
       if (node.potential.valid && !node.potential.unreachable) {
         promote_potential_node(current_node_id_);
       } else if (node.edges.size() <= 1 && !node.is_dead_end) {
-        // Backtracking into the same node with no potential means a dead-end.
         node.is_dead_end = true;
       }
     }
@@ -1413,15 +1389,16 @@ void MissionFsmNode::update_checkpoint_graph() {
     last_visited_node_id_ = current_node_id_;
   }
 
-  if (current_node_id_ < 0 && last_visited_node_id_ >= 0 && graph_nodes_.count(last_visited_node_id_) > 0) {
+  if (last_visited_node_id_ >= 0 && graph_nodes_.count(last_visited_node_id_) > 0) {
     const double d = calculate_distance(graph_nodes_[last_visited_node_id_].position,
                                         current_pose_.position);
     if (d >= nodes_distance_) {
       const int new_node = create_checkpoint_node(current_pose_.position, false);
-      add_edge_between_nodes(last_visited_node_id_, new_node);
+      if (last_visited_node_id_ >= 0 && last_visited_node_id_ != new_node) {
+        add_edge_between_nodes(last_visited_node_id_, new_node);
+      }
       last_visited_node_id_ = new_node;
       current_node_id_ = new_node;
-      previous_node_id_ = new_node;
     }
   }
 }

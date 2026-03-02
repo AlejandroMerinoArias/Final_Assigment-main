@@ -185,7 +185,7 @@ private:
   std::vector<geometry_msgs::msg::Pose> detected_lantern_poses_;
   size_t lanterns_found_count_;
   double lantern_dedup_threshold_; // meters
-  static constexpr size_t TARGET_LANTERN_COUNT = 3;
+  static constexpr size_t TARGET_LANTERN_COUNT = 4;
 
   // --- Mission parameters ---
   double takeoff_altitude_;
@@ -235,7 +235,6 @@ private:
   int entrance_node_id_ = -1;
   int last_visited_node_id_ = -1;
   int current_node_id_ = -1;
-  int previous_node_id_ = -1;
   bool travel_mode_ = false;
   std::deque<int> travel_path_;
 

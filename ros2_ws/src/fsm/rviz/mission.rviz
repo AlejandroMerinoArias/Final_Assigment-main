@@ -92,8 +92,7 @@ Visualization Manager:
       Name: Checkpoint Graph
       Namespaces:
         checkpoint_edges: true
-        checkpoint_multi_edge_nodes: true
-        checkpoint_single_edge_nodes: true
+        checkpoint_nodes: true
         checkpoint_potential_nodes: true
       Topic:
         Depth: 5

@@ -208,12 +208,12 @@ def generate_launch_description():
                 "collision_check_resolution": 0.2,
                 # Hard cap for each RRT* query. Prevents planner callback from
                 # blocking for long periods in cluttered areas.
-                "max_planning_time_sec": 1.5,
+                "max_planning_time_sec": 10.0,
                 "allow_partial_paths": False,
-                "direct_path_max_distance": 20.0,
+                "direct_path_max_distance": 30.0,
                 # Allow broader vertical sampling around target goals so
                 # RRT* can route through sloped cave sections.
-                "z_band": 3.5,
+                "z_band": 5.0,
             }
         ],
     )
