@@ -629,7 +629,22 @@ void MissionFsmNode::on_state_enter(MissionState state) {
 }
 
 void MissionFsmNode::on_state_exit(MissionState state) {
-  (void)state; // Currently no exit actions needed
+  if (state == MissionState::EXPLORE) {
+    auto disable_msg = std_msgs::msg::Bool();
+    disable_msg.data = false;
+    enable_mapping_pub_->publish(disable_msg);
+
+    // Ensure exploration-side bookkeeping is dropped whenever EXPLORE is
+    // left so stale goals/retries cannot leak into subsequent states.
+    goal_request_pending_ = false;
+    z_retry_altitudes_.clear();
+    z_retry_index_ = 0;
+    strategic_goal_ = geometry_msgs::msg::Point();
+    current_goal_ = geometry_msgs::msg::Point();
+    active_goal_source_ = GoalSource::EXPLORER;
+    active_goal_anchor_node_id_ = -1;
+    ++explorer_request_epoch_;
+  }
 }
 
 void MissionFsmNode::update_state() {
@@ -1338,10 +1353,17 @@ void MissionFsmNode::suspend_explorer_mode_for_travel() {
     return;
   }
 
+  // Always publish cancel when explorer gets suspended. This prevents stale
+  // goals from being reactivated by downstream planners/controllers if local
+  // bookkeeping gets out of sync.
   if (goal_active_ && active_goal_source_ == GoalSource::EXPLORER) {
     cancel_pub_->publish(std_msgs::msg::Empty());
-    goal_active_ = false;
   }
+  goal_active_ = false;
+
+  auto disable_msg = std_msgs::msg::Bool();
+  disable_msg.data = false;
+  enable_mapping_pub_->publish(disable_msg);
 
   // Any asynchronous service response received after this point is ignored
   // while travel_mode_ is active; also clear local explorer state to prevent
@@ -1351,6 +1373,8 @@ void MissionFsmNode::suspend_explorer_mode_for_travel() {
   z_retry_index_ = 0;
   strategic_goal_ = geometry_msgs::msg::Point();
   current_goal_ = geometry_msgs::msg::Point();
+  active_goal_source_ = GoalSource::TRAVEL;
+  active_goal_anchor_node_id_ = -1;
   last_pose_at_goal_set_ = current_pose_.position;
   reset_explorer_goal_filters();
   reset_explorer_filters_on_next_goal_ = false;
@@ -1365,6 +1389,17 @@ void MissionFsmNode::resume_explorer_mode_after_travel() {
   if (!explorer_mode_suspended_for_travel_) {
     return;
   }
+  auto enable_msg = std_msgs::msg::Bool();
+  enable_msg.data = true;
+  enable_mapping_pub_->publish(enable_msg);
+
+  z_retry_altitudes_.clear();
+  z_retry_index_ = 0;
+  strategic_goal_ = geometry_msgs::msg::Point();
+  current_goal_ = geometry_msgs::msg::Point();
+  active_goal_source_ = GoalSource::EXPLORER;
+  active_goal_anchor_node_id_ = -1;
+
   reset_explorer_goal_filters();
   last_successful_exploration_goal_time_ = this->now();
   explorer_mode_suspended_for_travel_ = false;
