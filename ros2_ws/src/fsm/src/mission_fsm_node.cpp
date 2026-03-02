@@ -1,5 +1,8 @@
 #include "fsm/mission_fsm_node.hpp"
 
+#include <limits>
+#include <queue>
+
 namespace control {
 
 MissionFsmNode::MissionFsmNode()
@@ -49,6 +52,13 @@ MissionFsmNode::MissionFsmNode()
   // Takeoff altitude: how many metres above start position to ascend
   this->declare_parameter("takeoff_altitude", takeoff_altitude_);
   takeoff_altitude_ = this->get_parameter("takeoff_altitude").as_double();
+
+  this->declare_parameter("macroplanning_enabled", macroplanning_enabled_);
+  macroplanning_enabled_ = this->get_parameter("macroplanning_enabled").as_bool();
+  this->declare_parameter("nodes_distance", nodes_distance_);
+  nodes_distance_ = this->get_parameter("nodes_distance").as_double();
+  this->declare_parameter("node_radius", node_radius_);
+  node_radius_ = this->get_parameter("node_radius").as_double();
 
   // Cave entrance - Main entrance
   cave_entrance_.x = -320.0;
@@ -111,6 +121,8 @@ MissionFsmNode::MissionFsmNode()
 
   drone_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>(
       "/fsm/drone_marker", 10);
+  checkpoint_markers_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
+      "/fsm/checkpoint_markers", 10);
 
   enable_mapping_pub_ = this->create_publisher<std_msgs::msg::Bool>(
       "/enable_mapping", rclcpp::QoS(1).transient_local().reliable());
@@ -205,6 +217,7 @@ void MissionFsmNode::timer_callback() {
   update_state();
   publish_state();
   publish_drone_marker();
+  publish_checkpoint_markers();
 }
 
 void MissionFsmNode::planner_status_callback(
@@ -404,6 +417,10 @@ void MissionFsmNode::on_state_enter(MissionState state) {
       // Reset goal-selection tracking when (re)entering exploration
       consecutive_goal_request_failures_ = 0;
       last_successful_exploration_goal_time_ = this->now();
+      if (macroplanning_enabled_ && entrance_node_id_ < 0) {
+        entrance_node_id_ = create_checkpoint_node(cave_entrance_, true);
+        last_visited_node_id_ = entrance_node_id_;
+      }
       // Main loop (update_state) will request the goal automatically
     }
     break;
@@ -510,6 +527,11 @@ void MissionFsmNode::update_state() {
     break;
 
   case MissionState::EXPLORE:
+    if (macroplanning_enabled_) {
+      update_checkpoint_graph();
+      update_mode_decision();
+    }
+
     // Check if we've found all lanterns
     if (lanterns_found_count_ >= TARGET_LANTERN_COUNT) {
       RCLCPP_INFO(this->get_logger(),
@@ -597,7 +619,16 @@ void MissionFsmNode::update_state() {
     // the exploration map is reported as ready by the exploration_manager.
     // This avoids spamming goal requests while the voxel map is still empty.
     if (!goal_active_ && !goal_request_pending_) {
-      if (exploration_map_ready_) {
+      if (macroplanning_enabled_ && travel_mode_ && !travel_path_.empty()) {
+        const int next_node_id = travel_path_.front();
+        travel_path_.pop_front();
+        if (graph_nodes_.count(next_node_id) > 0) {
+          RCLCPP_INFO(this->get_logger(),
+                      "Travel mode: traversing to checkpoint node %d.",
+                      next_node_id);
+          try_activate_exploration_goal(graph_nodes_.at(next_node_id).position);
+        }
+      } else if (exploration_map_ready_) {
         request_exploration_goal();
       } else {
         RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
@@ -661,6 +692,10 @@ void MissionFsmNode::update_state() {
         RCLCPP_WARN(this->get_logger(),
                     "All Z retries failed for goal [%.2f, %.2f]. Blacklisting.",
                     strategic_goal_.x, strategic_goal_.y);
+        if (macroplanning_enabled_) {
+          mark_potential_node_unreachable_near(strategic_goal_);
+        }
+
         // Publish to ExplorationManager so it doesn't suggest this again
         geometry_msgs::msg::PointStamped blacklist_msg;
         blacklist_msg.header.stamp = this->now();
@@ -904,6 +939,79 @@ void MissionFsmNode::publish_drone_marker() {
   drone_marker_pub_->publish(marker);
 }
 
+void MissionFsmNode::publish_checkpoint_markers() {
+  visualization_msgs::msg::MarkerArray marker_array;
+
+  visualization_msgs::msg::Marker nodes_marker;
+  nodes_marker.header.stamp = this->now();
+  nodes_marker.header.frame_id = "world";
+  nodes_marker.ns = "checkpoint_nodes";
+  nodes_marker.id = 0;
+  nodes_marker.type = visualization_msgs::msg::Marker::SPHERE_LIST;
+  nodes_marker.action = visualization_msgs::msg::Marker::ADD;
+  nodes_marker.scale.x = 1.6;
+  nodes_marker.scale.y = 1.6;
+  nodes_marker.scale.z = 1.6;
+  nodes_marker.color.r = 1.0;
+  nodes_marker.color.g = 1.0;
+  nodes_marker.color.b = 1.0;
+  nodes_marker.color.a = 1.0;
+
+  visualization_msgs::msg::Marker edges_marker;
+  edges_marker.header = nodes_marker.header;
+  edges_marker.ns = "checkpoint_edges";
+  edges_marker.id = 1;
+  edges_marker.type = visualization_msgs::msg::Marker::LINE_LIST;
+  edges_marker.action = visualization_msgs::msg::Marker::ADD;
+  edges_marker.scale.x = 0.35;
+  edges_marker.color.r = 0.0;
+  edges_marker.color.g = 1.0;
+  edges_marker.color.b = 0.0;
+  edges_marker.color.a = 1.0;
+
+  visualization_msgs::msg::Marker potential_marker;
+  potential_marker.header = nodes_marker.header;
+  potential_marker.ns = "checkpoint_potential_nodes";
+  potential_marker.id = 2;
+  potential_marker.type = visualization_msgs::msg::Marker::SPHERE_LIST;
+  potential_marker.action = visualization_msgs::msg::Marker::ADD;
+  potential_marker.scale.x = 1.2;
+  potential_marker.scale.y = 1.2;
+  potential_marker.scale.z = 1.2;
+  potential_marker.color.r = 1.0;
+  potential_marker.color.g = 0.55;
+  potential_marker.color.b = 0.0;
+  potential_marker.color.a = 1.0;
+
+  std::set<std::pair<int, int>> drawn_edges;
+  for (const auto &entry : graph_nodes_) {
+    const auto &node = entry.second;
+    nodes_marker.points.push_back(node.position);
+
+    if (node.potential.valid && !node.potential.unreachable) {
+      potential_marker.points.push_back(node.potential.position);
+    }
+
+    for (const int neigh : node.edges) {
+      if (graph_nodes_.count(neigh) == 0) {
+        continue;
+      }
+      const int a = std::min(node.id, neigh);
+      const int b = std::max(node.id, neigh);
+      if (!drawn_edges.insert({a, b}).second) {
+        continue;
+      }
+      edges_marker.points.push_back(node.position);
+      edges_marker.points.push_back(graph_nodes_.at(neigh).position);
+    }
+  }
+
+  marker_array.markers.push_back(nodes_marker);
+  marker_array.markers.push_back(edges_marker);
+  marker_array.markers.push_back(potential_marker);
+  checkpoint_markers_pub_->publish(marker_array);
+}
+
 void MissionFsmNode::start_refine_for_current_goal(const std::string &reason) {
   // If we have no active goal to refine, fallback to normal exploration loop.
   if (!goal_active_) {
@@ -989,7 +1097,9 @@ bool MissionFsmNode::try_activate_exploration_goal(const geometry_msgs::msg::Poi
   goal_set_time_ = this->now();
   last_pose_at_goal_set_ = current_pose_.position;
 
-  if (planner_type_ == "A_star") {
+  if (travel_mode_) {
+    planner_goal_pub_->publish(planner_goal);
+  } else if (planner_type_ == "A_star") {
     planner_goal_pub_a_->publish(planner_goal);
   } else {
     planner_goal_pub_->publish(planner_goal);
@@ -1058,6 +1168,10 @@ void MissionFsmNode::request_exploration_goal() {
                     "Received exploration goal: [%.2f, %.2f, %.2f]",
                     strategic_goal_.x, strategic_goal_.y, strategic_goal_.z);
 
+        if (macroplanning_enabled_) {
+          register_potential_node_for_anchor(strategic_goal_);
+        }
+
         if (!try_activate_exploration_goal(strategic_goal_)) {
           goal_request_pending_ = false;
           request_exploration_goal();
@@ -1068,6 +1182,306 @@ void MissionFsmNode::request_exploration_goal() {
         consecutive_goal_request_failures_ = 0;
         last_successful_exploration_goal_time_ = this->now();
       });
+}
+
+
+bool MissionFsmNode::is_inside_node(int node_id, const geometry_msgs::msg::Point &pos) const {
+  const auto it = graph_nodes_.find(node_id);
+  if (it == graph_nodes_.end()) {
+    return false;
+  }
+  return calculate_distance(it->second.position, pos) <= node_radius_;
+}
+
+std::optional<int> MissionFsmNode::find_node_containing_position(const geometry_msgs::msg::Point &pos) const {
+  int closest_id = -1;
+  double closest_dist = std::numeric_limits<double>::max();
+  for (const auto &entry : graph_nodes_) {
+    const double d = calculate_distance(entry.second.position, pos);
+    if (d <= node_radius_ && d < closest_dist) {
+      closest_dist = d;
+      closest_id = entry.first;
+    }
+  }
+  if (closest_id < 0) {
+    return std::nullopt;
+  }
+  return closest_id;
+}
+
+int MissionFsmNode::create_checkpoint_node(const geometry_msgs::msg::Point &pos, bool is_entrance) {
+  const int node_id = next_node_id_++;
+  CheckpointNode node;
+  node.id = node_id;
+  node.position = pos;
+  node.is_dead_end = is_entrance;
+  graph_nodes_[node_id] = node;
+  prune_potential_nodes_near(pos, nodes_distance_);
+  return node_id;
+}
+
+void MissionFsmNode::add_edge_between_nodes(int from_node, int to_node) {
+  if (from_node < 0 || to_node < 0 || from_node == to_node ||
+      graph_nodes_.count(from_node) == 0 || graph_nodes_.count(to_node) == 0) {
+    return;
+  }
+  graph_nodes_[from_node].edges.insert(to_node);
+  graph_nodes_[to_node].edges.insert(from_node);
+}
+
+void MissionFsmNode::prune_potential_nodes_near(const geometry_msgs::msg::Point &pos, double radius) {
+  for (auto &entry : graph_nodes_) {
+    auto &pot = entry.second.potential;
+    if (pot.valid && calculate_distance(pos, pot.position) <= radius) {
+      pot = PotentialNode{};
+    }
+  }
+}
+
+void MissionFsmNode::register_potential_node_for_anchor(const geometry_msgs::msg::Point &candidate) {
+  if (last_visited_node_id_ < 0 || graph_nodes_.count(last_visited_node_id_) == 0) {
+    return;
+  }
+
+  auto &anchor = graph_nodes_[last_visited_node_id_];
+  if (calculate_distance(anchor.position, candidate) < nodes_distance_) {
+    return;
+  }
+
+  for (const int neigh : anchor.edges) {
+    if (graph_nodes_.count(neigh) > 0 &&
+        calculate_distance(graph_nodes_[neigh].position, candidate) < nodes_distance_) {
+      return;
+    }
+  }
+
+  anchor.potential.position = candidate;
+  anchor.potential.valid = true;
+  anchor.potential.unreachable = false;
+}
+
+void MissionFsmNode::promote_potential_node(int anchor_node_id) {
+  if (graph_nodes_.count(anchor_node_id) == 0) {
+    return;
+  }
+  auto &anchor = graph_nodes_[anchor_node_id];
+  if (!anchor.potential.valid || anchor.potential.unreachable) {
+    return;
+  }
+
+  const geometry_msgs::msg::Point new_pos = anchor.potential.position;
+  anchor.potential = PotentialNode{};
+
+  int maybe_existing = -1;
+  for (const auto &entry : graph_nodes_) {
+    if (calculate_distance(entry.second.position, new_pos) <= node_radius_) {
+      maybe_existing = entry.first;
+      break;
+    }
+  }
+
+  const int new_node_id = (maybe_existing >= 0) ? maybe_existing : create_checkpoint_node(new_pos, false);
+  add_edge_between_nodes(anchor_node_id, new_node_id);
+}
+
+bool MissionFsmNode::promote_closest_potential_node() {
+  if (last_visited_node_id_ < 0 || graph_nodes_.count(last_visited_node_id_) == 0) {
+    return false;
+  }
+
+  int best_anchor = -1;
+  double best_dist = std::numeric_limits<double>::max();
+  for (const auto &entry : graph_nodes_) {
+    if (!entry.second.potential.valid || entry.second.potential.unreachable) {
+      continue;
+    }
+    const double d = calculate_distance(current_pose_.position, entry.second.potential.position);
+    if (d < best_dist) {
+      best_dist = d;
+      best_anchor = entry.first;
+    }
+  }
+
+  if (best_anchor < 0) {
+    return false;
+  }
+  promote_potential_node(best_anchor);
+  return true;
+}
+
+std::vector<int> MissionFsmNode::compute_shortest_path_nodes(int start_node, int goal_node) const {
+  std::queue<int> q;
+  std::unordered_map<int, int> parent;
+  q.push(start_node);
+  parent[start_node] = -1;
+
+  while (!q.empty()) {
+    const int current = q.front();
+    q.pop();
+    if (current == goal_node) {
+      break;
+    }
+    const auto it = graph_nodes_.find(current);
+    if (it == graph_nodes_.end()) {
+      continue;
+    }
+    for (const int neigh : it->second.edges) {
+      if (parent.count(neigh) > 0) {
+        continue;
+      }
+      parent[neigh] = current;
+      q.push(neigh);
+    }
+  }
+
+  if (parent.count(goal_node) == 0) {
+    return {};
+  }
+
+  std::vector<int> path;
+  for (int at = goal_node; at >= 0; at = parent[at]) {
+    path.push_back(at);
+  }
+  std::reverse(path.begin(), path.end());
+  return path;
+}
+
+void MissionFsmNode::reset_graph_to_entrance() {
+  if (entrance_node_id_ < 0 || graph_nodes_.count(entrance_node_id_) == 0) {
+    return;
+  }
+
+  CheckpointNode entrance = graph_nodes_[entrance_node_id_];
+  entrance.edges.clear();
+  entrance.potential = PotentialNode{};
+  entrance.is_dead_end = true;
+
+  graph_nodes_.clear();
+  graph_nodes_[entrance_node_id_] = entrance;
+  last_visited_node_id_ = entrance_node_id_;
+  current_node_id_ = entrance_node_id_;
+  travel_mode_ = false;
+  travel_path_.clear();
+}
+
+void MissionFsmNode::update_checkpoint_graph() {
+  if (graph_nodes_.empty()) {
+    return;
+  }
+
+  const auto containing = find_node_containing_position(current_pose_.position);
+  current_node_id_ = containing.value_or(-1);
+
+  if (current_node_id_ >= 0) {
+    if (last_visited_node_id_ >= 0 && last_visited_node_id_ != current_node_id_) {
+      add_edge_between_nodes(last_visited_node_id_, current_node_id_);
+    }
+
+    if (last_visited_node_id_ == current_node_id_) {
+      auto &node = graph_nodes_[current_node_id_];
+      if (node.potential.valid && !node.potential.unreachable) {
+        promote_potential_node(current_node_id_);
+      } else if (node.edges.size() <= 1 && !node.is_dead_end) {
+        node.is_dead_end = true;
+      }
+    }
+
+    last_visited_node_id_ = current_node_id_;
+  }
+
+  if (last_visited_node_id_ >= 0 && graph_nodes_.count(last_visited_node_id_) > 0) {
+    const double d = calculate_distance(graph_nodes_[last_visited_node_id_].position,
+                                        current_pose_.position);
+    if (d >= nodes_distance_) {
+      const int new_node = create_checkpoint_node(current_pose_.position, false);
+      if (last_visited_node_id_ >= 0 && last_visited_node_id_ != new_node) {
+        add_edge_between_nodes(last_visited_node_id_, new_node);
+      }
+      last_visited_node_id_ = new_node;
+      current_node_id_ = new_node;
+    }
+  }
+}
+
+void MissionFsmNode::update_mode_decision() {
+  if (last_visited_node_id_ < 0 || graph_nodes_.count(last_visited_node_id_) == 0) {
+    travel_mode_ = false;
+    return;
+  }
+
+  std::vector<int> single_edge_nodes;
+  for (const auto &entry : graph_nodes_) {
+    const auto degree = entry.second.edges.size() + (entry.second.is_dead_end ? 1 : 0);
+    if (degree == 1) {
+      single_edge_nodes.push_back(entry.first);
+    }
+  }
+
+  if (single_edge_nodes.empty()) {
+    if (!promote_closest_potential_node()) {
+      bool has_any_potential = false;
+      for (const auto &entry : graph_nodes_) {
+        has_any_potential = has_any_potential || entry.second.potential.valid;
+      }
+      if (!has_any_potential) {
+        reset_graph_to_entrance();
+      }
+    }
+    travel_mode_ = false;
+    travel_path_.clear();
+    return;
+  }
+
+  const bool in_node_with_one_edge = (current_node_id_ >= 0 && graph_nodes_.count(current_node_id_) > 0 &&
+                                      (graph_nodes_[current_node_id_].edges.size() + (graph_nodes_[current_node_id_].is_dead_end ? 1 : 0) == 1));
+  const bool outside_node = (current_node_id_ < 0);
+  const bool last_has_one_edge = (graph_nodes_[last_visited_node_id_].edges.size() + (graph_nodes_[last_visited_node_id_].is_dead_end ? 1 : 0) == 1);
+
+  if (in_node_with_one_edge || (outside_node && last_has_one_edge)) {
+    travel_mode_ = false;
+    travel_path_.clear();
+    return;
+  }
+
+  int target_leaf = -1;
+  double best = std::numeric_limits<double>::max();
+  for (const int leaf : single_edge_nodes) {
+    double d = calculate_distance(current_pose_.position, graph_nodes_[leaf].position);
+    if (d < best) {
+      best = d;
+      target_leaf = leaf;
+    }
+  }
+
+  const bool current_has_multi = current_node_id_ >= 0 && graph_nodes_[current_node_id_].edges.size() > 1;
+  const bool last_has_multi = graph_nodes_[last_visited_node_id_].edges.size() > 1;
+  if (!(current_has_multi && last_has_multi) || target_leaf < 0) {
+    travel_mode_ = false;
+    travel_path_.clear();
+    return;
+  }
+
+  auto path = compute_shortest_path_nodes(current_node_id_, target_leaf);
+  if (path.size() <= 1) {
+    travel_mode_ = false;
+    travel_path_.clear();
+    return;
+  }
+
+  travel_mode_ = true;
+  travel_path_.clear();
+  for (size_t i = 1; i < path.size(); ++i) {
+    travel_path_.push_back(path[i]);
+  }
+}
+
+void MissionFsmNode::mark_potential_node_unreachable_near(const geometry_msgs::msg::Point &pos) {
+  for (auto &entry : graph_nodes_) {
+    auto &pot = entry.second.potential;
+    if (pot.valid && calculate_distance(pot.position, pos) <= node_radius_) {
+      pot = PotentialNode{};
+    }
+  }
 }
 
 } // namespace control
