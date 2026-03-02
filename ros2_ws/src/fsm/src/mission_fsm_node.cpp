@@ -700,6 +700,11 @@ void MissionFsmNode::update_state() {
 
   case MissionState::EXPLORE:
     if (macroplanning_enabled_) {
+      const double potential_prune_radius =
+          (active_goal_source_ == GoalSource::POTENTIAL)
+              ? node_radius_
+              : 10.0;
+      prune_potential_nodes_near(current_pose_.position, potential_prune_radius);
       update_checkpoint_graph();
       update_mode_decision();
     }
@@ -2283,16 +2288,38 @@ void MissionFsmNode::update_mode_decision() {
   }
 
   if (single_edge_nodes.empty()) {
+    const int start_node = (current_node_id_ >= 0) ? current_node_id_ : last_visited_node_id_;
+    if (start_node < 0 || graph_nodes_.count(start_node) == 0) {
+      travel_mode_ = false;
+      potential_resolution_node_id_ = -1;
+      travel_path_.clear();
+      resume_explorer_mode_after_travel();
+      return;
+    }
+
     int closest_potential_node = -1;
     double best_dist = std::numeric_limits<double>::max();
+    std::vector<int> best_path;
     for (const auto &entry : graph_nodes_) {
       if (!node_has_resolvable_potential(entry.first)) {
         continue;
       }
+
+      std::vector<int> candidate_path;
+      if (entry.first == start_node) {
+        candidate_path = {start_node};
+      } else {
+        candidate_path = compute_shortest_path_nodes(start_node, entry.first);
+      }
+      if (candidate_path.empty()) {
+        continue;
+      }
+
       const double d = calculate_distance(current_pose_.position, entry.second.position);
       if (d < best_dist) {
         best_dist = d;
         closest_potential_node = entry.first;
+        best_path = std::move(candidate_path);
       }
     }
 
@@ -2308,14 +2335,12 @@ void MissionFsmNode::update_mode_decision() {
     }
 
     potential_resolution_node_id_ = closest_potential_node;
-    const int start_node = (current_node_id_ >= 0) ? current_node_id_ : last_visited_node_id_;
     if (start_node != closest_potential_node) {
-      auto path = compute_shortest_path_nodes(start_node, closest_potential_node);
-      if (path.size() > 1) {
+      if (best_path.size() > 1) {
         travel_mode_ = true;
         travel_path_.clear();
-        for (size_t i = 1; i < path.size(); ++i) {
-          travel_path_.push_back(path[i]);
+        for (size_t i = 1; i < best_path.size(); ++i) {
+          travel_path_.push_back(best_path[i]);
         }
         if (!was_travel_mode) {
           suspend_explorer_mode_for_travel();
