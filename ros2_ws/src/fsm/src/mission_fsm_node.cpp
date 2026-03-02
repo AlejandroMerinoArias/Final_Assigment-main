@@ -1739,7 +1739,12 @@ int MissionFsmNode::create_checkpoint_node(const geometry_msgs::msg::Point &pos,
   node.is_dead_end = is_entrance;
   node.is_provisional = is_provisional;
   graph_nodes_[node_id] = node;
+
+  // Event-based cleanup: whenever a new node is generated, re-validate all
+  // potentials against the current graph (nodes + edges).
+  prune_potentials_within_node_distance_recursive();
   prune_potential_nodes_near(pos, nodes_distance_);
+
   if (!is_provisional) {
     std::vector<int> provisional_to_remove;
     for (const auto &entry : graph_nodes_) {
@@ -1862,16 +1867,6 @@ bool MissionFsmNode::is_potential_valid_global(const geometry_msgs::msg::Point &
   }
 
   return true;
-}
-
-void MissionFsmNode::periodic_potential_cleanup() {
-  if (graph_nodes_.empty()) {
-    return;
-  }
-
-  // Keep a single source of truth for global potential validity against
-  // all current nodes and graph edges.
-  prune_potentials_within_node_distance_recursive();
 }
 
 void MissionFsmNode::prune_potentials_within_node_distance_recursive() {
@@ -2165,8 +2160,6 @@ void MissionFsmNode::update_checkpoint_graph() {
   if (graph_nodes_.empty()) {
     return;
   }
-
-  periodic_potential_cleanup();
 
   previous_node_id_ = current_node_id_;
   const auto containing = find_node_containing_position(current_pose_.position);
