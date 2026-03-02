@@ -76,7 +76,7 @@ effective_candidates = num_candidates + (consecutive_failures * 10)
 
 ### 4. Time-Based Utility Scoring
 
-Each candidate is scored by the estimated inverse travel time, with a penalty for altitude change:
+Each candidate is scored by the estimated inverse travel time, with penalties for altitude change and lateral deviation:
 
 $$U = \frac{1}{T_\text{eff}}$$
 
@@ -88,7 +88,9 @@ Where:
 - $w_z$ is `vertical_penalty_weight` (default 2.0)
 - $|\Delta z|$ is the absolute altitude change
 
-No XY directional preference is applied in the exploration manager utility. Global directional preference is handled by the FSM macroplanning graph.
+**Forward bonus**: Candidates with `dx < 0` (deeper into cave) are boosted by up to **5×** proportionally to `|dx|`. Candidates with `dx > 0` (retreating) are penalized by **0.1×**.
+
+**Lateral penalty**: If the lateral-to-forward ratio exceeds 1.0, utility is divided by that ratio.
 
 ### 5. Candidate Filtering
 
