@@ -1757,7 +1757,8 @@ double MissionFsmNode::point_to_segment_distance(const geometry_msgs::msg::Point
 
 bool MissionFsmNode::is_potential_valid_global(const geometry_msgs::msg::Point &candidate) const {
   for (const auto &entry : graph_nodes_) {
-    if (calculate_distance(entry.second.position, candidate) < nodes_distance_) {
+    // "Within node_distance" must include points exactly on the threshold.
+    if (calculate_distance(entry.second.position, candidate) <= nodes_distance_) {
       return false;
     }
   }
@@ -1788,44 +1789,9 @@ void MissionFsmNode::periodic_potential_cleanup() {
     return;
   }
 
+  // Keep a single source of truth for global potential validity against
+  // all current nodes and graph edges.
   prune_potentials_within_node_distance_recursive();
-
-  std::set<std::pair<int, int>> unique_edges;
-  for (const auto &entry : graph_nodes_) {
-    for (const int neigh : entry.second.edges) {
-      const int a = std::min(entry.first, neigh);
-      const int b = std::max(entry.first, neigh);
-      unique_edges.insert({a, b});
-    }
-  }
-
-  for (auto &entry : graph_nodes_) {
-    auto &pots = entry.second.potentials;
-    pots.erase(std::remove_if(pots.begin(), pots.end(),
-                              [&](const PotentialNode &pot) {
-                                for (const auto &node_entry : graph_nodes_) {
-                                  if (calculate_distance(pot.position, node_entry.second.position) <=
-                                      nodes_distance_) {
-                                    return true;
-                                  }
-                                }
-
-                                for (const auto &edge : unique_edges) {
-                                  if (graph_nodes_.count(edge.first) == 0 ||
-                                      graph_nodes_.count(edge.second) == 0) {
-                                    continue;
-                                  }
-                                  const auto &from = graph_nodes_.at(edge.first).position;
-                                  const auto &to = graph_nodes_.at(edge.second).position;
-                                  if (point_to_segment_distance(pot.position, from, to) <=
-                                      nodes_distance_) {
-                                    return true;
-                                  }
-                                }
-                                return false;
-                              }),
-               pots.end());
-  }
 }
 
 void MissionFsmNode::prune_potentials_within_node_distance_recursive() {
@@ -1850,7 +1816,7 @@ void MissionFsmNode::prune_potentials_within_node_distance_recursive() {
 
 bool MissionFsmNode::is_within_node_distance_of_any_node(const geometry_msgs::msg::Point &pos) const {
   for (const auto &entry : graph_nodes_) {
-    if (calculate_distance(pos, entry.second.position) < nodes_distance_) {
+    if (calculate_distance(pos, entry.second.position) <= nodes_distance_) {
       return true;
     }
   }
