@@ -1860,12 +1860,49 @@ void MissionFsmNode::update_mode_decision() {
     return;
   }
 
+  geometry_msgs::msg::Point preferred_direction;
+  preferred_direction.x = current_pose_.position.x - graph_nodes_[last_visited_node_id_].position.x;
+  preferred_direction.y = current_pose_.position.y - graph_nodes_[last_visited_node_id_].position.y;
+  preferred_direction.z = current_pose_.position.z - graph_nodes_[last_visited_node_id_].position.z;
+
+  const auto last_degree = graph_nodes_[last_visited_node_id_].edges.size() +
+                           (graph_nodes_[last_visited_node_id_].is_dead_end ? 1 : 0);
+  if (last_degree == 1 && !graph_nodes_[last_visited_node_id_].edges.empty()) {
+    const int predecessor_id = *graph_nodes_[last_visited_node_id_].edges.begin();
+    if (graph_nodes_.count(predecessor_id) > 0) {
+      preferred_direction.x = graph_nodes_[last_visited_node_id_].position.x -
+                              graph_nodes_[predecessor_id].position.x;
+      preferred_direction.y = graph_nodes_[last_visited_node_id_].position.y -
+                              graph_nodes_[predecessor_id].position.y;
+      preferred_direction.z = graph_nodes_[last_visited_node_id_].position.z -
+                              graph_nodes_[predecessor_id].position.z;
+    }
+  }
+
+  const double preferred_norm = std::hypot(preferred_direction.x, preferred_direction.y);
+
   int target_leaf = -1;
-  double best = std::numeric_limits<double>::max();
+  double best_alignment = -std::numeric_limits<double>::max();
+  double best_distance = std::numeric_limits<double>::max();
   for (const int leaf : single_edge_nodes) {
-    double d = calculate_distance(current_pose_.position, graph_nodes_[leaf].position);
-    if (d < best) {
-      best = d;
+    const auto &leaf_pos = graph_nodes_[leaf].position;
+    const double d = calculate_distance(current_pose_.position, leaf_pos);
+
+    double alignment = 0.0;
+    if (preferred_norm > 1e-3) {
+      const double vx = leaf_pos.x - graph_nodes_[last_visited_node_id_].position.x;
+      const double vy = leaf_pos.y - graph_nodes_[last_visited_node_id_].position.y;
+      const double vnorm = std::hypot(vx, vy);
+      if (vnorm > 1e-3) {
+        alignment = (vx * preferred_direction.x + vy * preferred_direction.y) /
+                    (vnorm * preferred_norm);
+      }
+    }
+
+    if (alignment > best_alignment + 1e-6 ||
+        (std::abs(alignment - best_alignment) <= 1e-6 && d < best_distance)) {
+      best_alignment = alignment;
+      best_distance = d;
       target_leaf = leaf;
     }
   }
