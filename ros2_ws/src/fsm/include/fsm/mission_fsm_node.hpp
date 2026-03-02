@@ -143,6 +143,8 @@ private:
   bool is_within_node_distance_of_any_node(const geometry_msgs::msg::Point &pos) const;
   bool find_safer_node_position(const geometry_msgs::msg::Point &center,
                                 geometry_msgs::msg::Point &safe_out) const;
+  bool find_alternative_travel_checkpoint_position(int node_id,
+                                                 geometry_msgs::msg::Point &safe_out) const;
   void mark_potential_node_unreachable_near(const geometry_msgs::msg::Point &pos);
 
   struct PotentialNode {

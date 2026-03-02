@@ -1,6 +1,7 @@
 #include "fsm/mission_fsm_node.hpp"
 
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <queue>
 
@@ -287,6 +288,23 @@ void MissionFsmNode::planner_status_callback(
 
     if (current_state_ == MissionState::EXPLORE &&
         active_goal_source_ == GoalSource::TRAVEL) {
+      if (!travel_path_.empty()) {
+        const int blocked_node_id = travel_path_.front();
+        geometry_msgs::msg::Point shifted;
+        if (find_alternative_travel_checkpoint_position(blocked_node_id, shifted)) {
+          RCLCPP_WARN(this->get_logger(),
+                      "Travel node %d appears blocked. Shifting checkpoint from [%.2f, %.2f, %.2f] to [%.2f, %.2f, %.2f] and retrying.",
+                      blocked_node_id,
+                      graph_nodes_[blocked_node_id].position.x,
+                      graph_nodes_[blocked_node_id].position.y,
+                      graph_nodes_[blocked_node_id].position.z,
+                      shifted.x, shifted.y, shifted.z);
+          graph_nodes_[blocked_node_id].position = shifted;
+          try_activate_exploration_goal(shifted, true, GoalSource::TRAVEL, -1);
+          return;
+        }
+      }
+
       RCLCPP_WARN(this->get_logger(),
                   "Travel checkpoint planning failed. Keeping travel mode active and retrying.");
       return;
@@ -1726,6 +1744,80 @@ bool MissionFsmNode::find_safer_node_position(const geometry_msgs::msg::Point &c
     safe_out = best;
   }
   return improved;
+}
+
+bool MissionFsmNode::find_alternative_travel_checkpoint_position(
+    int node_id, geometry_msgs::msg::Point &safe_out) const {
+  const auto it = graph_nodes_.find(node_id);
+  if (it == graph_nodes_.end()) {
+    return false;
+  }
+
+  const auto &center = it->second.position;
+
+  auto conflicts_other_node = [&](const geometry_msgs::msg::Point &candidate) {
+    for (const auto &entry : graph_nodes_) {
+      if (entry.first == node_id) {
+        continue;
+      }
+      if (calculate_distance(candidate, entry.second.position) < node_radius_ * 0.6) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  auto clearance_at = [&](const geometry_msgs::msg::Point &candidate) {
+    if (recent_obstacle_points_.empty()) {
+      return std::numeric_limits<double>::infinity();
+    }
+    double min_dist = std::numeric_limits<double>::max();
+    for (const auto &obs : recent_obstacle_points_) {
+      min_dist = std::min(min_dist, calculate_distance(candidate, obs));
+    }
+    return min_dist;
+  };
+
+  geometry_msgs::msg::Point best = center;
+  double best_clearance = clearance_at(center);
+  bool found = false;
+
+  static constexpr double kMaxSearchRadius = 6.0;
+  static constexpr double kRadiusStep = 0.75;
+  static constexpr int kAngleSamples = 24;
+  static constexpr std::array<double, 3> kZOffsets{0.0, 0.5, -0.5};
+  const double kPi = std::acos(-1.0);
+
+  for (double r = kRadiusStep; r <= kMaxSearchRadius + 1e-6; r += kRadiusStep) {
+    for (int i = 0; i < kAngleSamples; ++i) {
+      const double theta = 2.0 * kPi * static_cast<double>(i) /
+                           static_cast<double>(kAngleSamples);
+      for (const double z_offset : kZOffsets) {
+        geometry_msgs::msg::Point candidate = center;
+        candidate.x += r * std::cos(theta);
+        candidate.y += r * std::sin(theta);
+        candidate.z += z_offset;
+
+        if (conflicts_other_node(candidate)) {
+          continue;
+        }
+
+        const double clearance = clearance_at(candidate);
+        if (!found || clearance > best_clearance + 1e-3) {
+          best = candidate;
+          best_clearance = clearance;
+          found = true;
+        }
+      }
+    }
+  }
+
+  if (!found) {
+    return false;
+  }
+
+  safe_out = best;
+  return true;
 }
 
 void MissionFsmNode::register_potential_node_for_anchor(const geometry_msgs::msg::Point &candidate) {
