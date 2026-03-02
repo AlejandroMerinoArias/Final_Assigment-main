@@ -656,6 +656,22 @@ void MissionFsmNode::update_state() {
       update_mode_decision();
     }
 
+      // If macroplanning forces travel mode while an explorer goal is still
+      // active, stop the explorer command chain immediately. Otherwise the
+      // drone can keep following the stale explorer goal (often behind a
+      // single-edge checkpoint) until timeout/reach, delaying travel-mode
+      // checkpoint traversal.
+      if (travel_mode_ && goal_active_ &&
+          active_goal_source_ == GoalSource::EXPLORER) {
+        RCLCPP_INFO(this->get_logger(),
+                    "Travel mode activated while explorer goal is active. "
+                    "Cancelling stale explorer goal to hand over command "
+                    "chain to travel mode.");
+        cancel_pub_->publish(std_msgs::msg::Empty());
+        goal_active_ = false;
+        active_goal_anchor_node_id_ = -1;
+      }
+
     // Check if we've found all lanterns
     if (lanterns_found_count_ >= TARGET_LANTERN_COUNT) {
       RCLCPP_INFO(this->get_logger(),
