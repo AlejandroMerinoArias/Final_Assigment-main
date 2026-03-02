@@ -243,6 +243,13 @@ void MissionFsmNode::timer_callback() {
 
 void MissionFsmNode::planner_status_callback(
     const std_msgs::msg::String::SharedPtr msg) {
+  if (!goal_active_) {
+    RCLCPP_DEBUG(this->get_logger(),
+                 "Ignoring planner status '%s' because no goal is currently active.",
+                 msg->data.c_str());
+    return;
+  }
+
   if (msg->data == "GOAL_REACHED") {
     RCLCPP_INFO(this->get_logger(), "Planner: Goal reached!");
     goal_active_ = false;
@@ -1436,6 +1443,16 @@ void MissionFsmNode::suspend_explorer_mode_for_travel() {
   // Always publish cancel when explorer gets suspended. A planner goal may
   // already have been consumed and converted into a trajectory, so we must
   // explicitly flush downstream execution regardless of local source flags.
+  if (goal_active_ && active_goal_source_ == GoalSource::EXPLORER) {
+    RCLCPP_INFO(this->get_logger(),
+                "Dismissing active explorer goal [%.2f, %.2f, %.2f] while entering travel mode.",
+                current_goal_.x, current_goal_.y, current_goal_.z);
+    // Treat as intentionally completed/closed so watchdog bookkeeping does not
+    // consider this an unfinished explorer goal.
+    last_successful_exploration_goal_time_ = this->now();
+    consecutive_too_close_rejections_ = 0;
+  }
+
   cancel_pub_->publish(std_msgs::msg::Empty());
   goal_active_ = false;
 
