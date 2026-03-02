@@ -8,6 +8,7 @@
 #include <geometry_msgs/msg/point_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <nav_msgs/msg/path.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/empty.hpp>
@@ -15,6 +16,9 @@
 #include <trajectory_msgs/msg/multi_dof_joint_trajectory.hpp>
 #include <trajectory_msgs/msg/multi_dof_joint_trajectory_point.hpp>
 #include <visualization_msgs/msg/marker.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
+
+#include <rclcpp/time.hpp>
 
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
@@ -24,7 +28,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <deque>
+#include <optional>
+#include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace control {
@@ -84,6 +92,7 @@ private:
   void exploration_goal_callback(
       const geometry_msgs::msg::PoseStamped::SharedPtr msg);
   void start_mission_callback(const std_msgs::msg::Empty::SharedPtr msg);
+  void depth_points_callback(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
   void timer_callback();
   void request_exploration_goal();
 
@@ -101,12 +110,40 @@ private:
       const std::vector<geometry_msgs::msg::Point> &waypoints);
   void publish_state();
   void publish_drone_marker();
+  void publish_checkpoint_markers();
   /// Re-send the current active goal to the planner so it recomputes the path
   /// from the drone's current position (mid-flight replanning).
   void replan_current_goal();
   void start_refine_for_current_goal(const std::string &reason);
   void build_z_retry_altitudes(double center_z);
   bool try_activate_exploration_goal(const geometry_msgs::msg::Point &goal);
+  bool is_inside_node(int node_id, const geometry_msgs::msg::Point &pos) const;
+  std::optional<int> find_node_containing_position(const geometry_msgs::msg::Point &pos) const;
+  int create_checkpoint_node(const geometry_msgs::msg::Point &pos, bool is_entrance = false);
+  void add_edge_between_nodes(int from_node, int to_node);
+  void update_checkpoint_graph();
+  void update_mode_decision();
+  void register_potential_node_for_anchor(const geometry_msgs::msg::Point &candidate);
+  void promote_potential_node(int anchor_node_id);
+  bool promote_closest_potential_node();
+  std::vector<int> compute_shortest_path_nodes(int start_node, int goal_node) const;
+  void reset_graph_to_entrance();
+  void prune_potential_nodes_near(const geometry_msgs::msg::Point &pos, double radius);
+  void mark_potential_node_unreachable_near(const geometry_msgs::msg::Point &pos);
+
+  struct PotentialNode {
+    geometry_msgs::msg::Point position;
+    bool valid = false;
+    bool unreachable = false;
+  };
+
+  struct CheckpointNode {
+    int id = -1;
+    geometry_msgs::msg::Point position;
+    std::set<int> edges;
+    bool is_dead_end = false;
+    PotentialNode potential;
+  };
 
   // --- Subscribers ---
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
@@ -115,6 +152,8 @@ private:
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr start_mission_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr
       exploration_map_ready_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr
+      depth_points_sub_;
 
   // --- Service Clients ---
   rclcpp::Client<exploring::srv::GetExplorationGoal>::SharedPtr
@@ -132,6 +171,8 @@ private:
       planner_goal_pub_a_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr
       drone_marker_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr
+      checkpoint_markers_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr enable_mapping_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr blacklist_goal_pub_;
   // --- Timer ---
@@ -193,6 +234,25 @@ private:
   geometry_msgs::msg::Point strategic_goal_; // The (x,y) we're trying to reach
   int z_retry_max_attempts_ = 3;             // Max altitudes to try per strategic goal
   double z_retry_step_ = 1.0;                // Altitude spacing between retries
+
+  // --- Macroplanning graph state ---
+  std::unordered_map<int, CheckpointNode> graph_nodes_;
+  int next_node_id_ = 0;
+  int entrance_node_id_ = -1;
+  int last_visited_node_id_ = -1;
+  int current_node_id_ = -1;
+  int previous_node_id_ = -1;
+  bool travel_mode_ = false;
+  std::deque<int> travel_path_;
+
+  double nodes_distance_ = 30.0;
+  double node_radius_ = 10.0;
+  bool macroplanning_enabled_ = true;
+  double max_potential_node_range_ = 60.0;
+  geometry_msgs::msg::Point latest_seen_point_;
+  bool latest_seen_point_valid_ = false;
+  rclcpp::Time latest_seen_point_stamp_;
+  double seen_point_timeout_s_ = 1.0;
 };
 
 } // namespace control
