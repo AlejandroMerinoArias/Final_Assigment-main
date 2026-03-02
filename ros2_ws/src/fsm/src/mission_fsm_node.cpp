@@ -1296,6 +1296,10 @@ void MissionFsmNode::request_exploration_goal() {
                     "Received exploration goal: [%.2f, %.2f, %.2f]",
                     strategic_goal_.x, strategic_goal_.y, strategic_goal_.z);
 
+        if (macroplanning_enabled_) {
+          register_potential_node_for_anchor(strategic_goal_);
+        }
+
         if (!try_activate_exploration_goal(strategic_goal_)) {
           goal_request_pending_ = false;
           request_exploration_goal();
@@ -1449,7 +1453,7 @@ void MissionFsmNode::promote_potential_node(int anchor_node_id) {
     }
   }
 
-  const int new_node_id = (maybe_existing >= 0) ? maybe_existing : create_checkpoint_node(new_pos, false, true);
+  const int new_node_id = (maybe_existing >= 0) ? maybe_existing : create_checkpoint_node(new_pos, false);
   // Rule g: when a node becomes real, remove any potential nodes in nodes_distance radius.
   if (graph_nodes_.count(new_node_id) > 0) {
     prune_potential_nodes_near(graph_nodes_[new_node_id].position, nodes_distance_);

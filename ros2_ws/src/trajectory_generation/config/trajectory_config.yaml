@@ -1,8 +1,8 @@
 trajectory_generation:
   ros__parameters:
     # Dynamic constraints - these are UPPER BOUNDS (inequality constraints)
-    max_v: 5.0     # m/s — maximum velocity magnitude for safe cave navigation
-    max_a: 10.0    # m/s² — maximum acceleration magnitude to prevent overshoot on turns
+    max_v: 20.0     # m/s — maximum velocity magnitude for safe cave navigation
+    max_a: 5.0    # m/s² — maximum acceleration magnitude to prevent overshoot on turns
     
     publish_whole_trajectory: false
     dt: 0.01
