@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <cmath>
 #include <deque>
+#include <cstdint>
 #include <optional>
 #include <set>
 #include <string>
@@ -130,7 +131,11 @@ private:
   void remove_checkpoint_node(int node_id);
   void update_checkpoint_graph();
   void update_mode_decision();
+  void suspend_explorer_mode_for_travel();
+  void resume_explorer_mode_after_travel();
   void register_potential_node_for_anchor(const geometry_msgs::msg::Point &candidate);
+  bool is_potential_valid_global(const geometry_msgs::msg::Point &candidate) const;
+  void prune_potentials_within_node_distance_recursive();
   bool node_has_resolvable_potential(int node_id) const;
   bool pop_next_potential_for_node(int node_id, geometry_msgs::msg::Point &goal_out);
   std::vector<int> compute_shortest_path_nodes(int start_node, int goal_node) const;
@@ -258,6 +263,7 @@ private:
   int current_node_id_ = -1;
   int previous_node_id_ = -1;
   bool travel_mode_ = false;
+  bool explorer_mode_suspended_for_travel_ = false;
   int potential_resolution_node_id_ = -1;
   bool suppress_rule_l_ = false;
   std::deque<int> travel_path_;
@@ -277,6 +283,7 @@ private:
   bool reset_explorer_filters_on_next_goal_ = false;
   bool force_explorer_until_new_node_ = false;
   int fallback_origin_node_id_ = -1;
+  uint64_t explorer_request_epoch_ = 0;
 };
 
 } // namespace control

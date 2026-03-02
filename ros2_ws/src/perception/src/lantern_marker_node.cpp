@@ -11,7 +11,7 @@ public:
   : Node("lantern_marker"), marker_id_(0) {
     declare_parameter<std::string>("detections_topic", "/detected_lanterns");
     declare_parameter<std::string>("marker_topic", "/lantern_marker");
-    declare_parameter<double>("sphere_diameter", 0.3);
+    declare_parameter<double>("sphere_diameter", 1.6);
 
     const auto detections_topic = get_parameter("detections_topic").as_string();
     const auto marker_topic = get_parameter("marker_topic").as_string();
