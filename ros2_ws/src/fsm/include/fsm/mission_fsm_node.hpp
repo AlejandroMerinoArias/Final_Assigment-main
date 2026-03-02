@@ -251,7 +251,7 @@ private:
   std::deque<int> travel_path_;
 
   double nodes_distance_ = 30.0;
-  double node_radius_ = 10.0;
+  double node_radius_ = 15.0;
   bool macroplanning_enabled_ = true;
   double max_potential_node_range_ = 100.0;
   double potential_angle_threshold_deg_ = 30.0;
