@@ -1108,6 +1108,10 @@ void MissionFsmNode::start_refine_for_current_goal(const std::string &reason) {
   cancel_pub_->publish(std_msgs::msg::Empty());
   goal_active_ = false;
 
+  if (reason.find("stuck") != std::string::npos) {
+    suppress_rule_l_ = true;
+  }
+
   RCLCPP_WARN(this->get_logger(),
               "Triggering REFINE_GOAL for [%.2f, %.2f, %.2f] (%s).",
               strategic_goal_.x, strategic_goal_.y, strategic_goal_.z,
@@ -1288,6 +1292,25 @@ std::optional<int> MissionFsmNode::find_node_containing_position(const geometry_
 }
 
 int MissionFsmNode::create_checkpoint_node(const geometry_msgs::msg::Point &pos, bool is_entrance) {
+  int nearby_node_id = -1;
+  double best_dist = std::numeric_limits<double>::max();
+  for (const auto &entry : graph_nodes_) {
+    const double d = calculate_distance(entry.second.position, pos);
+    if (d < nodes_distance_ && d < best_dist) {
+      best_dist = d;
+      nearby_node_id = entry.first;
+    }
+  }
+
+  if (nearby_node_id >= 0) {
+    // Reuse nearby checkpoint instead of creating duplicates closer than nodes_distance.
+    prune_potential_nodes_near(graph_nodes_[nearby_node_id].position, nodes_distance_);
+    if (is_entrance) {
+      graph_nodes_[nearby_node_id].is_dead_end = true;
+    }
+    return nearby_node_id;
+  }
+
   const int node_id = next_node_id_++;
   CheckpointNode node;
   node.id = node_id;
@@ -1359,6 +1382,10 @@ void MissionFsmNode::promote_potential_node(int anchor_node_id) {
   }
 
   const int new_node_id = (maybe_existing >= 0) ? maybe_existing : create_checkpoint_node(new_pos, false);
+  // Rule g: when a node becomes real, remove any potential nodes in nodes_distance radius.
+  if (graph_nodes_.count(new_node_id) > 0) {
+    prune_potential_nodes_near(graph_nodes_[new_node_id].position, nodes_distance_);
+  }
   add_edge_between_nodes(anchor_node_id, new_node_id);
 }
 
@@ -1460,13 +1487,19 @@ void MissionFsmNode::update_checkpoint_graph() {
     }
 
     if (last_visited_node_id_ == current_node_id_) {
-      auto &node = graph_nodes_[current_node_id_];
-      if (node.potential.valid && !node.potential.unreachable) {
-        promote_potential_node(current_node_id_);
-      } else if (node.edges.size() <= 1 && !node.is_dead_end) {
-        // Backtracking into the same node with no potential means a dead-end.
-        node.is_dead_end = true;
+      // Rule l should not apply while stuck suppression is active.
+      if (!suppress_rule_l_) {
+        auto &node = graph_nodes_[current_node_id_];
+        if (node.potential.valid && !node.potential.unreachable) {
+          promote_potential_node(current_node_id_);
+        } else if (node.edges.size() <= 1 && !node.is_dead_end) {
+          // Backtracking into the same node with no potential means a dead-end.
+          node.is_dead_end = true;
+        }
       }
+    } else {
+      // Entered a different node: clear stuck suppression and resume normal rule-l handling.
+      suppress_rule_l_ = false;
     }
 
     last_visited_node_id_ = current_node_id_;

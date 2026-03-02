@@ -243,6 +243,7 @@ private:
   int current_node_id_ = -1;
   int previous_node_id_ = -1;
   bool travel_mode_ = false;
+  bool suppress_rule_l_ = false;
   std::deque<int> travel_path_;
 
   double nodes_distance_ = 30.0;
