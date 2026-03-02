@@ -116,8 +116,11 @@ private:
   void replan_current_goal();
   void start_refine_for_current_goal(const std::string &reason);
   void build_z_retry_altitudes(double center_z);
+  enum class GoalSource { EXPLORER, TRAVEL, POTENTIAL };
   bool try_activate_exploration_goal(const geometry_msgs::msg::Point &goal,
-                                     bool allow_close_goal = false);
+                                     bool allow_close_goal = false,
+                                     GoalSource source = GoalSource::EXPLORER,
+                                     int anchor_node_id = -1);
   bool is_inside_node(int node_id, const geometry_msgs::msg::Point &pos) const;
   std::optional<int> find_node_containing_position(const geometry_msgs::msg::Point &pos) const;
   int create_checkpoint_node(const geometry_msgs::msg::Point &pos, bool is_entrance = false,
@@ -132,6 +135,13 @@ private:
   std::vector<int> compute_shortest_path_nodes(int start_node, int goal_node) const;
   void reset_graph_to_entrance();
   void prune_potential_nodes_near(const geometry_msgs::msg::Point &pos, double radius);
+  void periodic_potential_cleanup();
+  double point_to_segment_distance(const geometry_msgs::msg::Point &p,
+                                   const geometry_msgs::msg::Point &a,
+                                   const geometry_msgs::msg::Point &b) const;
+  bool is_within_node_distance_of_any_node(const geometry_msgs::msg::Point &pos) const;
+  bool find_safer_node_position(const geometry_msgs::msg::Point &center,
+                                geometry_msgs::msg::Point &safe_out) const;
   void mark_potential_node_unreachable_near(const geometry_msgs::msg::Point &pos);
 
   struct PotentialNode {
@@ -260,6 +270,11 @@ private:
   bool latest_seen_point_valid_ = false;
   rclcpp::Time latest_seen_point_stamp_;
   double seen_point_timeout_s_ = 1.0;
+  std::vector<geometry_msgs::msg::Point> recent_obstacle_points_;
+  GoalSource active_goal_source_ = GoalSource::EXPLORER;
+  int active_goal_anchor_node_id_ = -1;
+  bool force_explorer_until_new_node_ = false;
+  int fallback_origin_node_id_ = -1;
 };
 
 } // namespace control
