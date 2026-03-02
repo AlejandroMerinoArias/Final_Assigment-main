@@ -210,7 +210,7 @@ def generate_launch_description():
                 # blocking for long periods in cluttered areas.
                 "max_planning_time_sec": 1.5,
                 "allow_partial_paths": False,
-                "direct_path_max_distance": 10.0,
+                "direct_path_max_distance": 20.0,
                 # Allow broader vertical sampling around target goals so
                 # RRT* can route through sloped cave sections.
                 "z_band": 3.5,
@@ -328,11 +328,11 @@ def generate_launch_description():
             
             # Scoring & Constraints
             {'drone_speed': 2.0},             # For travel time estimation (m/s)
-            {'vertical_penalty_weight': 0.8}, # Softer altitude-change penalty
+            {'vertical_penalty_weight': 0.5}, # Softer altitude-change penalty
             {'vertical_penalty_deadband': 1.0}, # No penalty for small |dz| slope-following
-            {'max_goal_z_delta': 3.5},       # Allow stronger altitude adaptation per goal
+            {'max_goal_z_delta': 5.0},       # Allow stronger altitude adaptation per goal
             {'max_goal_z_delta_stuck_bonus': 2.0}, # Extra |dz| allowance when stuck
-            {'min_goal_distance': 5.0},       # Reject frontiers too close to drone (m)
+            {'min_goal_distance': 1.0},       # Reject frontiers too close to drone (m)
             {'max_step_distance': 30.0},      # Max goal distance from drone (m)
             
             # Safety

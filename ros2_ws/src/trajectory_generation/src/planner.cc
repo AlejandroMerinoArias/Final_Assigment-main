@@ -461,10 +461,13 @@ bool TrajectoryPlanner::planTrajectoryFromPath(
 
     // Skip waypoints that are too close to the previous vertex
     // This prevents zero-length segments which cause segment_time == 0
-    // assertions
+    // assertions.
+    // IMPORTANT: never skip the last waypoint — it configures the 'end'
+    // vertex, and skipping it leaves 'end' without a position constraint,
+    // causing an Eigen assertion crash in estimateSegmentTimesContinuous.
     const double kMinVertexDist = 0.1; // [m]
     const double dist_to_prev = (waypoint_position - prev_pos).norm();
-    if (dist_to_prev < kMinVertexDist) {
+    if (dist_to_prev < kMinVertexDist && !is_last) {
       RCLCPP_WARN(node_->get_logger(),
                   "Skipping waypoint %zu (too close to previous, dist=%.3f m). "
                   "Waypoint: [%.2f, %.2f, %.2f], Prev: [%.2f, %.2f, %.2f]",
@@ -596,21 +599,29 @@ bool TrajectoryPlanner::planTrajectoryFromPath(
   // If only 2 vertices, add a midpoint to give optimizer freedom
   if (vertices.size() == 2) {
     Eigen::VectorXd start_pos_xd, end_pos_xd;
-    vertices[0].getConstraint(
+    bool has_start = vertices[0].getConstraint(
         mav_trajectory_generation::derivative_order::POSITION, &start_pos_xd);
-    vertices[1].getConstraint(
+    bool has_end = vertices[1].getConstraint(
         mav_trajectory_generation::derivative_order::POSITION, &end_pos_xd);
-    Eigen::Vector3d start_pos = start_pos_xd;
-    Eigen::Vector3d end_pos = end_pos_xd;
-    Eigen::Vector3d midpoint = (start_pos + end_pos) / 2.0;
 
-    mav_trajectory_generation::Vertex middle(dimension);
-    middle.addConstraint(mav_trajectory_generation::derivative_order::POSITION,
-                         midpoint);
-    vertices.insert(vertices.begin() + 1, middle);
-    RCLCPP_INFO(node_->get_logger(),
-                "Inserted midpoint for 2-vertex path at [%.2f, %.2f, %.2f]",
-                midpoint.x(), midpoint.y(), midpoint.z());
+    if (has_start && has_end && start_pos_xd.size() == 3 && end_pos_xd.size() == 3) {
+      Eigen::Vector3d start_pos = start_pos_xd;
+      Eigen::Vector3d end_pos = end_pos_xd;
+      Eigen::Vector3d midpoint = (start_pos + end_pos) / 2.0;
+
+      mav_trajectory_generation::Vertex middle(dimension);
+      middle.addConstraint(mav_trajectory_generation::derivative_order::POSITION,
+                           midpoint);
+      vertices.insert(vertices.begin() + 1, middle);
+      RCLCPP_INFO(node_->get_logger(),
+                  "Inserted midpoint for 2-vertex path at [%.2f, %.2f, %.2f]",
+                  midpoint.x(), midpoint.y(), midpoint.z());
+    } else {
+      RCLCPP_WARN(node_->get_logger(),
+                  "Skipping midpoint insertion: start or end vertex has no "
+                  "valid position constraint (sizes: start=%ld, end=%ld).",
+                  start_pos_xd.size(), end_pos_xd.size());
+    }
   }
 
   // estimate initial segment times
