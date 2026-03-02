@@ -1305,6 +1305,42 @@ void MissionFsmNode::reset_explorer_goal_filters() {
   consecutive_goal_request_failures_ = 0;
 }
 
+void MissionFsmNode::suspend_explorer_mode_for_travel() {
+  if (explorer_mode_suspended_for_travel_) {
+    return;
+  }
+
+  if (goal_active_ && active_goal_source_ == GoalSource::EXPLORER) {
+    cancel_pub_->publish(std_msgs::msg::Empty());
+    goal_active_ = false;
+  }
+
+  // Any asynchronous service response received after this point is ignored
+  // while travel_mode_ is active; also clear local explorer state to prevent
+  // stale goals/filters from leaking back when returning to explorer mode.
+  goal_request_pending_ = false;
+  z_retry_altitudes_.clear();
+  z_retry_index_ = 0;
+  strategic_goal_ = geometry_msgs::msg::Point();
+  current_goal_ = geometry_msgs::msg::Point();
+  last_pose_at_goal_set_ = current_pose_.position;
+  reset_explorer_goal_filters();
+  reset_explorer_filters_on_next_goal_ = false;
+  explorer_mode_suspended_for_travel_ = true;
+
+  RCLCPP_INFO(this->get_logger(),
+              "Macroplanning travel mode engaged: explorer goaling state fully reset.");
+}
+
+void MissionFsmNode::resume_explorer_mode_after_travel() {
+  if (!explorer_mode_suspended_for_travel_) {
+    return;
+  }
+  reset_explorer_goal_filters();
+  last_successful_exploration_goal_time_ = this->now();
+  explorer_mode_suspended_for_travel_ = false;
+}
+
 bool MissionFsmNode::try_activate_exploration_goal(const geometry_msgs::msg::Point &goal,
                                                    bool allow_close_goal,
                                                    GoalSource source,
@@ -1606,6 +1642,8 @@ void MissionFsmNode::periodic_potential_cleanup() {
     return;
   }
 
+  prune_potentials_within_node_distance_recursive();
+
   std::set<std::pair<int, int>> unique_edges;
   for (const auto &entry : graph_nodes_) {
     for (const int neigh : entry.second.edges) {
@@ -1642,6 +1680,32 @@ void MissionFsmNode::periodic_potential_cleanup() {
                               }),
                pots.end());
   }
+}
+
+void MissionFsmNode::prune_potentials_within_node_distance_recursive() {
+  if (graph_nodes_.empty()) {
+    return;
+  }
+
+  bool removed_any = false;
+  do {
+    removed_any = false;
+    for (auto &entry : graph_nodes_) {
+      auto &pots = entry.second.potentials;
+      const auto old_size = pots.size();
+      pots.erase(std::remove_if(pots.begin(), pots.end(), [&](const PotentialNode &pot) {
+                   for (const auto &node_entry : graph_nodes_) {
+                     if (calculate_distance(pot.position, node_entry.second.position) <=
+                         nodes_distance_) {
+                       return true;
+                     }
+                   }
+                   return false;
+                 }),
+                pots.end());
+      removed_any = removed_any || (pots.size() != old_size);
+    }
+  } while (removed_any);
 }
 
 bool MissionFsmNode::is_within_node_distance_of_any_node(const geometry_msgs::msg::Point &pos) const {
@@ -1754,6 +1818,7 @@ void MissionFsmNode::register_potential_node_for_anchor(const geometry_msgs::msg
     new_potential.valid = true;
     new_potential.unreachable = false;
     anchor.potentials.push_back(new_potential);
+    prune_potentials_within_node_distance_recursive();
   }
 }
 
@@ -1942,6 +2007,8 @@ void MissionFsmNode::update_checkpoint_graph() {
 }
 
 void MissionFsmNode::update_mode_decision() {
+  const bool was_travel_mode = travel_mode_;
+
   if (force_explorer_until_new_node_) {
     const bool reached_new_node =
         (current_node_id_ >= 0 && current_node_id_ != fallback_origin_node_id_);
@@ -1949,6 +2016,7 @@ void MissionFsmNode::update_mode_decision() {
       travel_mode_ = false;
       potential_resolution_node_id_ = -1;
       travel_path_.clear();
+      resume_explorer_mode_after_travel();
       return;
     }
     force_explorer_until_new_node_ = false;
@@ -1960,6 +2028,9 @@ void MissionFsmNode::update_mode_decision() {
     travel_mode_ = false;
     potential_resolution_node_id_ = -1;
     travel_path_.clear();
+    if (!travel_mode_) {
+      resume_explorer_mode_after_travel();
+    }
     return;
   }
 
@@ -1993,6 +2064,9 @@ void MissionFsmNode::update_mode_decision() {
       travel_mode_ = false;
       potential_resolution_node_id_ = -1;
       travel_path_.clear();
+      if (!travel_mode_) {
+        resume_explorer_mode_after_travel();
+      }
       return;
     }
 
@@ -2006,12 +2080,16 @@ void MissionFsmNode::update_mode_decision() {
         for (size_t i = 1; i < path.size(); ++i) {
           travel_path_.push_back(path[i]);
         }
+        if (!was_travel_mode) {
+          suspend_explorer_mode_for_travel();
+        }
         return;
       }
     }
 
     travel_mode_ = false;
     travel_path_.clear();
+    resume_explorer_mode_after_travel();
     return;
   }
 
@@ -2025,6 +2103,7 @@ void MissionFsmNode::update_mode_decision() {
   if (outside_node && last_has_one_edge) {
     travel_mode_ = false;
     travel_path_.clear();
+    resume_explorer_mode_after_travel();
     return;
   }
 
@@ -2083,6 +2162,7 @@ void MissionFsmNode::update_mode_decision() {
   if (start_node < 0 || graph_nodes_.count(start_node) == 0 || target_leaf < 0) {
     travel_mode_ = false;
     travel_path_.clear();
+    resume_explorer_mode_after_travel();
     return;
   }
 
@@ -2090,6 +2170,7 @@ void MissionFsmNode::update_mode_decision() {
   if (path.size() <= 1) {
     travel_mode_ = false;
     travel_path_.clear();
+    resume_explorer_mode_after_travel();
     return;
   }
 
@@ -2097,6 +2178,9 @@ void MissionFsmNode::update_mode_decision() {
   travel_path_.clear();
   for (size_t i = 1; i < path.size(); ++i) {
     travel_path_.push_back(path[i]);
+  }
+  if (!was_travel_mode) {
+    suspend_explorer_mode_for_travel();
   }
 }
 
