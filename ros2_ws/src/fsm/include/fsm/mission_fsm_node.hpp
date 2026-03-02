@@ -119,8 +119,10 @@ private:
   bool try_activate_exploration_goal(const geometry_msgs::msg::Point &goal);
   bool is_inside_node(int node_id, const geometry_msgs::msg::Point &pos) const;
   std::optional<int> find_node_containing_position(const geometry_msgs::msg::Point &pos) const;
-  int create_checkpoint_node(const geometry_msgs::msg::Point &pos, bool is_entrance = false);
+  int create_checkpoint_node(const geometry_msgs::msg::Point &pos, bool is_entrance = false,
+                             bool is_provisional = false);
   void add_edge_between_nodes(int from_node, int to_node);
+  void remove_checkpoint_node(int node_id);
   void update_checkpoint_graph();
   void update_mode_decision();
   void register_potential_node_for_anchor(const geometry_msgs::msg::Point &candidate);
@@ -142,6 +144,7 @@ private:
     geometry_msgs::msg::Point position;
     std::set<int> edges;
     bool is_dead_end = false;
+    bool is_provisional = false;
     PotentialNode potential;
   };
 

@@ -240,6 +240,25 @@ void MissionFsmNode::planner_status_callback(
   } else if (msg->data == "PLAN_FAILED") {
     RCLCPP_WARN(this->get_logger(),
                 "Planner: Planning failed for current goal.");
+
+    if (macroplanning_enabled_) {
+      std::vector<int> provisional_failed_nodes;
+      for (const auto &entry : graph_nodes_) {
+        if (!entry.second.is_provisional) {
+          continue;
+        }
+        if (calculate_distance(entry.second.position, current_goal_) <= node_radius_) {
+          provisional_failed_nodes.push_back(entry.first);
+        }
+      }
+      for (const int node_id : provisional_failed_nodes) {
+        RCLCPP_WARN(this->get_logger(),
+                    "Removing provisional node %d after PLAN_FAILED near [%.2f, %.2f, %.2f].",
+                    node_id, current_goal_.x, current_goal_.y, current_goal_.z);
+        remove_checkpoint_node(node_id);
+      }
+    }
+
     goal_active_ = false;
 
     // If we're exploring, trigger the Z-retry recovery
@@ -752,6 +771,16 @@ void MissionFsmNode::update_state() {
                     strategic_goal_.x, strategic_goal_.y);
         if (macroplanning_enabled_) {
           mark_potential_node_unreachable_near(strategic_goal_);
+          std::vector<int> provisional_failed_nodes;
+          for (const auto &entry : graph_nodes_) {
+            if (entry.second.is_provisional &&
+                calculate_distance(entry.second.position, strategic_goal_) <= node_radius_) {
+              provisional_failed_nodes.push_back(entry.first);
+            }
+          }
+          for (const int node_id : provisional_failed_nodes) {
+            remove_checkpoint_node(node_id);
+          }
         }
 
         // Publish to ExplorationManager so it doesn't suggest this again
@@ -1055,11 +1084,27 @@ void MissionFsmNode::publish_checkpoint_markers() {
   potential_marker.color.b = 0.0;
   potential_marker.color.a = 1.0;
 
+  visualization_msgs::msg::Marker provisional_marker;
+  provisional_marker.header = single_edge_nodes_marker.header;
+  provisional_marker.ns = "checkpoint_provisional_nodes";
+  provisional_marker.id = 4;
+  provisional_marker.type = visualization_msgs::msg::Marker::SPHERE_LIST;
+  provisional_marker.action = visualization_msgs::msg::Marker::ADD;
+  provisional_marker.scale.x = 1.4;
+  provisional_marker.scale.y = 1.4;
+  provisional_marker.scale.z = 1.4;
+  provisional_marker.color.r = 1.0;
+  provisional_marker.color.g = 0.55;
+  provisional_marker.color.b = 0.0;
+  provisional_marker.color.a = 1.0;
+
   std::set<std::pair<int, int>> drawn_edges;
   for (const auto &entry : graph_nodes_) {
     const auto &node = entry.second;
     const size_t degree = node.edges.size() + (node.is_dead_end ? 1u : 0u);
-    if (degree <= 1) {
+    if (node.is_provisional) {
+      provisional_marker.points.push_back(node.position);
+    } else if (degree <= 1) {
       single_edge_nodes_marker.points.push_back(node.position);
     } else {
       multi_edge_nodes_marker.points.push_back(node.position);
@@ -1087,6 +1132,7 @@ void MissionFsmNode::publish_checkpoint_markers() {
   marker_array.markers.push_back(multi_edge_nodes_marker);
   marker_array.markers.push_back(edges_marker);
   marker_array.markers.push_back(potential_marker);
+  marker_array.markers.push_back(provisional_marker);
   checkpoint_markers_pub_->publish(marker_array);
 }
 
@@ -1291,33 +1337,31 @@ std::optional<int> MissionFsmNode::find_node_containing_position(const geometry_
   return closest_id;
 }
 
-int MissionFsmNode::create_checkpoint_node(const geometry_msgs::msg::Point &pos, bool is_entrance) {
-  int nearby_node_id = -1;
-  double best_dist = std::numeric_limits<double>::max();
-  for (const auto &entry : graph_nodes_) {
-    const double d = calculate_distance(entry.second.position, pos);
-    if (d < nodes_distance_ && d < best_dist) {
-      best_dist = d;
-      nearby_node_id = entry.first;
-    }
-  }
-
-  if (nearby_node_id >= 0) {
-    // Reuse nearby checkpoint instead of creating duplicates closer than nodes_distance.
-    prune_potential_nodes_near(graph_nodes_[nearby_node_id].position, nodes_distance_);
-    if (is_entrance) {
-      graph_nodes_[nearby_node_id].is_dead_end = true;
-    }
-    return nearby_node_id;
-  }
-
+int MissionFsmNode::create_checkpoint_node(const geometry_msgs::msg::Point &pos, bool is_entrance,
+                                           bool is_provisional) {
   const int node_id = next_node_id_++;
   CheckpointNode node;
   node.id = node_id;
   node.position = pos;
   node.is_dead_end = is_entrance;
+  node.is_provisional = is_provisional;
   graph_nodes_[node_id] = node;
   prune_potential_nodes_near(pos, nodes_distance_);
+  if (!is_provisional) {
+    std::vector<int> provisional_to_remove;
+    for (const auto &entry : graph_nodes_) {
+      if (entry.first == node_id) {
+        continue;
+      }
+      if (entry.second.is_provisional &&
+          calculate_distance(entry.second.position, pos) <= nodes_distance_) {
+        provisional_to_remove.push_back(entry.first);
+      }
+    }
+    for (const int provisional_id : provisional_to_remove) {
+      remove_checkpoint_node(provisional_id);
+    }
+  }
   return node_id;
 }
 
@@ -1328,6 +1372,34 @@ void MissionFsmNode::add_edge_between_nodes(int from_node, int to_node) {
   }
   graph_nodes_[from_node].edges.insert(to_node);
   graph_nodes_[to_node].edges.insert(from_node);
+}
+
+void MissionFsmNode::remove_checkpoint_node(int node_id) {
+  const auto it = graph_nodes_.find(node_id);
+  if (it == graph_nodes_.end()) {
+    return;
+  }
+
+  const auto neighbors = it->second.edges;
+  for (const int neighbor : neighbors) {
+    if (graph_nodes_.count(neighbor) > 0) {
+      graph_nodes_[neighbor].edges.erase(node_id);
+    }
+  }
+
+  if (current_node_id_ == node_id) {
+    current_node_id_ = -1;
+  }
+  if (previous_node_id_ == node_id) {
+    previous_node_id_ = -1;
+  }
+  if (last_visited_node_id_ == node_id) {
+    last_visited_node_id_ = entrance_node_id_;
+  }
+
+  travel_path_.erase(std::remove(travel_path_.begin(), travel_path_.end(), node_id),
+                     travel_path_.end());
+  graph_nodes_.erase(node_id);
 }
 
 void MissionFsmNode::prune_potential_nodes_near(const geometry_msgs::msg::Point &pos, double radius) {
@@ -1410,6 +1482,7 @@ bool MissionFsmNode::promote_closest_potential_node() {
   if (best_anchor < 0) {
     return false;
   }
+
   promote_potential_node(best_anchor);
   return true;
 }

@@ -95,6 +95,7 @@ Visualization Manager:
         checkpoint_multi_edge_nodes: true
         checkpoint_single_edge_nodes: true
         checkpoint_potential_nodes: true
+        checkpoint_provisional_nodes: true
       Topic:
         Depth: 5
         Durability Policy: Volatile
