@@ -734,6 +734,24 @@ void MissionFsmNode::update_state() {
         const bool travel_owned_goal =
             (active_goal_source_ == GoalSource::TRAVEL ||
              active_goal_source_ == GoalSource::POTENTIAL);
+        if (active_goal_source_ == GoalSource::POTENTIAL &&
+            time_since_goal_set > GOAL_TIMEOUT_SECONDS) {
+          RCLCPP_WARN(this->get_logger(),
+                      "Potential-node attempt timed out after %.1f s. "
+                      "Falling back to explorer mode.",
+                      time_since_goal_set);
+          cancel_pub_->publish(std_msgs::msg::Empty());
+          goal_active_ = false;
+          active_goal_source_ = GoalSource::EXPLORER;
+          active_goal_anchor_node_id_ = -1;
+          travel_mode_ = false;
+          potential_resolution_node_id_ = -1;
+          travel_path_.clear();
+          force_explorer_until_new_node_ = true;
+          fallback_origin_node_id_ = last_visited_node_id_;
+          break;
+        }
+
         if (travel_owned_goal && time_since_goal_set > GOAL_TIMEOUT_SECONDS &&
             movement_since_goal < MIN_MOVEMENT_THRESHOLD) {
           RCLCPP_WARN(this->get_logger(),
@@ -827,14 +845,14 @@ void MissionFsmNode::update_state() {
 
     // Mid-flight replanning: every replan_interval_s_ seconds while flying
     // toward a goal, ask the planner to recompute from the current position.
-    if (goal_active_ && active_goal_source_ != GoalSource::TRAVEL) {
+    if (goal_active_ && active_goal_source_ == GoalSource::EXPLORER) {
       double time_since_replan = (this->now() - last_replan_time_).seconds();
       if (time_since_replan >= replan_interval_s_) {
         replan_current_goal();
       }
-    } else if (goal_active_ && active_goal_source_ == GoalSource::TRAVEL) {
+    } else if (goal_active_ && active_goal_source_ != GoalSource::EXPLORER) {
       RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 3000,
-                            "Travel mode active: keeping single published RRT goal (no periodic replan).");
+                            "Macroplanning-owned goal active: skipping periodic replan to avoid planner churn.");
     }
     break;
 
@@ -1301,6 +1319,15 @@ bool MissionFsmNode::try_activate_exploration_goal(const geometry_msgs::msg::Poi
                                                    bool allow_close_goal,
                                                    GoalSource source,
                                                    int anchor_node_id) {
+  if (source == GoalSource::EXPLORER &&
+      is_backtracking_from_single_edge_node(goal)) {
+    RCLCPP_WARN(this->get_logger(),
+                "Rejecting exploration goal [%.2f, %.2f, %.2f]: "
+                "it regresses toward predecessor of a single-edge node.",
+                goal.x, goal.y, goal.z);
+    return false;
+  }
+
   build_z_retry_altitudes(goal.z);
   z_retry_index_ = 0;
   if (z_retry_altitudes_.empty()) {
@@ -1826,6 +1853,56 @@ void MissionFsmNode::reset_graph_to_entrance() {
   travel_mode_ = false;
   potential_resolution_node_id_ = -1;
   travel_path_.clear();
+}
+
+bool MissionFsmNode::is_backtracking_from_single_edge_node(const geometry_msgs::msg::Point &goal) const {
+  if (!macroplanning_enabled_ || graph_nodes_.empty()) {
+    return false;
+  }
+
+  int anchor_id = -1;
+  if (current_node_id_ >= 0 && graph_nodes_.count(current_node_id_) > 0) {
+    const auto &node = graph_nodes_.at(current_node_id_);
+    const auto degree = node.edges.size() + (node.is_dead_end ? 1 : 0);
+    if (current_node_id_ != entrance_node_id_ && degree == 1 && !node.edges.empty()) {
+      anchor_id = current_node_id_;
+    }
+  }
+  if (anchor_id < 0 && last_visited_node_id_ >= 0 && graph_nodes_.count(last_visited_node_id_) > 0) {
+    const auto &node = graph_nodes_.at(last_visited_node_id_);
+    const auto degree = node.edges.size() + (node.is_dead_end ? 1 : 0);
+    if (last_visited_node_id_ != entrance_node_id_ && degree == 1 && !node.edges.empty()) {
+      anchor_id = last_visited_node_id_;
+    }
+  }
+  if (anchor_id < 0) {
+    return false;
+  }
+
+  const auto &anchor = graph_nodes_.at(anchor_id);
+  const int predecessor_id = *anchor.edges.begin();
+  if (graph_nodes_.count(predecessor_id) == 0) {
+    return false;
+  }
+  const auto &predecessor = graph_nodes_.at(predecessor_id);
+
+  const double fwd_x = anchor.position.x - predecessor.position.x;
+  const double fwd_y = anchor.position.y - predecessor.position.y;
+  const double goal_x = goal.x - anchor.position.x;
+  const double goal_y = goal.y - anchor.position.y;
+
+  const double fwd_norm = std::hypot(fwd_x, fwd_y);
+  const double goal_norm = std::hypot(goal_x, goal_y);
+  if (fwd_norm < 1e-3 || goal_norm < 1e-3) {
+    return false;
+  }
+
+  const double alignment = (fwd_x * goal_x + fwd_y * goal_y) / (fwd_norm * goal_norm);
+  const bool points_backward = alignment < -0.2;
+  const bool near_predecessor =
+      calculate_distance(goal, predecessor.position) < node_radius_ * 1.2;
+
+  return points_backward && near_predecessor;
 }
 
 void MissionFsmNode::update_checkpoint_graph() {
