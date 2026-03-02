@@ -126,8 +126,8 @@ private:
   void update_checkpoint_graph();
   void update_mode_decision();
   void register_potential_node_for_anchor(const geometry_msgs::msg::Point &candidate);
-  void promote_potential_node(int anchor_node_id);
-  bool promote_closest_potential_node();
+  bool node_has_resolvable_potential(int node_id) const;
+  bool pop_next_potential_for_node(int node_id, geometry_msgs::msg::Point &goal_out);
   std::vector<int> compute_shortest_path_nodes(int start_node, int goal_node) const;
   void reset_graph_to_entrance();
   void prune_potential_nodes_near(const geometry_msgs::msg::Point &pos, double radius);
@@ -145,7 +145,7 @@ private:
     std::set<int> edges;
     bool is_dead_end = false;
     bool is_provisional = false;
-    PotentialNode potential;
+    std::vector<PotentialNode> potentials;
   };
 
   // --- Subscribers ---
@@ -246,6 +246,7 @@ private:
   int current_node_id_ = -1;
   int previous_node_id_ = -1;
   bool travel_mode_ = false;
+  int potential_resolution_node_id_ = -1;
   bool suppress_rule_l_ = false;
   std::deque<int> travel_path_;
 

@@ -1,5 +1,6 @@
 #include "fsm/mission_fsm_node.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <queue>
 
@@ -705,6 +706,14 @@ void MissionFsmNode::update_state() {
                       next_node_id);
           try_activate_exploration_goal(graph_nodes_.at(next_node_id).position);
         }
+      } else if (macroplanning_enabled_ && potential_resolution_node_id_ >= 0) {
+        geometry_msgs::msg::Point potential_goal;
+        if (pop_next_potential_for_node(potential_resolution_node_id_, potential_goal)) {
+          RCLCPP_INFO(this->get_logger(),
+                      "Resolving potential node from anchor %d.",
+                      potential_resolution_node_id_);
+          try_activate_exploration_goal(potential_goal);
+        }
       } else if (exploration_map_ready_) {
         request_exploration_goal();
       } else {
@@ -1110,8 +1119,10 @@ void MissionFsmNode::publish_checkpoint_markers() {
       multi_edge_nodes_marker.points.push_back(node.position);
     }
 
-    if (node.potential.valid && !node.potential.unreachable) {
-      potential_marker.points.push_back(node.potential.position);
+    for (const auto &pot : node.potentials) {
+      if (!pot.unreachable) {
+        potential_marker.points.push_back(pot.position);
+      }
     }
 
     for (const int neigh : node.edges) {
@@ -1396,6 +1407,9 @@ void MissionFsmNode::remove_checkpoint_node(int node_id) {
   if (last_visited_node_id_ == node_id) {
     last_visited_node_id_ = entrance_node_id_;
   }
+  if (potential_resolution_node_id_ == node_id) {
+    potential_resolution_node_id_ = -1;
+  }
 
   travel_path_.erase(std::remove(travel_path_.begin(), travel_path_.end(), node_id),
                      travel_path_.end());
@@ -1404,10 +1418,13 @@ void MissionFsmNode::remove_checkpoint_node(int node_id) {
 
 void MissionFsmNode::prune_potential_nodes_near(const geometry_msgs::msg::Point &pos, double radius) {
   for (auto &entry : graph_nodes_) {
-    auto &pot = entry.second.potential;
-    if (pot.valid && calculate_distance(pos, pot.position) <= radius) {
-      pot = PotentialNode{};
-    }
+    auto &pots = entry.second.potentials;
+    pots.erase(std::remove_if(pots.begin(), pots.end(),
+                              [&](const PotentialNode &pot) {
+                                return !pot.unreachable &&
+                                       calculate_distance(pos, pot.position) <= radius;
+                              }),
+               pots.end());
   }
 }
 
@@ -1428,63 +1445,75 @@ void MissionFsmNode::register_potential_node_for_anchor(const geometry_msgs::msg
     }
   }
 
-  anchor.potential.position = candidate;
-  anchor.potential.valid = true;
-  anchor.potential.unreachable = false;
-}
-
-void MissionFsmNode::promote_potential_node(int anchor_node_id) {
-  if (graph_nodes_.count(anchor_node_id) == 0) {
-    return;
-  }
-  auto &anchor = graph_nodes_[anchor_node_id];
-  if (!anchor.potential.valid || anchor.potential.unreachable) {
-    return;
-  }
-
-  const geometry_msgs::msg::Point new_pos = anchor.potential.position;
-  anchor.potential = PotentialNode{};
-
-  int maybe_existing = -1;
-  for (const auto &entry : graph_nodes_) {
-    if (calculate_distance(entry.second.position, new_pos) <= node_radius_) {
-      maybe_existing = entry.first;
-      break;
+  const double candidate_angle = std::atan2(candidate.y - anchor.position.y,
+                                            candidate.x - anchor.position.x);
+  const double candidate_radius = calculate_distance(anchor.position, candidate);
+  const double kPi = std::acos(-1.0);
+  auto angle_delta = [kPi](double a, double b) {
+    double d = std::fabs(a - b);
+    while (d > kPi) {
+      d = std::fabs(d - 2.0 * kPi);
     }
-  }
+    return d;
+  };
 
-  const int new_node_id = (maybe_existing >= 0) ? maybe_existing : create_checkpoint_node(new_pos, false);
-  // Rule g: when a node becomes real, remove any potential nodes in nodes_distance radius.
-  if (graph_nodes_.count(new_node_id) > 0) {
-    prune_potential_nodes_near(graph_nodes_[new_node_id].position, nodes_distance_);
-  }
-  add_edge_between_nodes(anchor_node_id, new_node_id);
-}
-
-bool MissionFsmNode::promote_closest_potential_node() {
-  if (last_visited_node_id_ < 0 || graph_nodes_.count(last_visited_node_id_) == 0) {
-    return false;
-  }
-
-  int best_anchor = -1;
-  double best_dist = std::numeric_limits<double>::max();
-  for (const auto &entry : graph_nodes_) {
-    if (!entry.second.potential.valid || entry.second.potential.unreachable) {
+  bool has_distinct_angle = anchor.potentials.empty();
+  for (auto &pot : anchor.potentials) {
+    if (pot.unreachable) {
       continue;
     }
-    const double d = calculate_distance(current_pose_.position, entry.second.potential.position);
-    if (d < best_dist) {
-      best_dist = d;
-      best_anchor = entry.first;
+    const double existing_angle = std::atan2(pot.position.y - anchor.position.y,
+                                             pot.position.x - anchor.position.x);
+    const double existing_radius = calculate_distance(anchor.position, pot.position);
+    const double delta = angle_delta(candidate_angle, existing_angle);
+    if (delta < (kPi / 3.0)) {
+      if (candidate_radius > existing_radius) {
+        pot.position = candidate;
+        pot.unreachable = false;
+      }
+      return;
     }
+    has_distinct_angle = true;
   }
 
-  if (best_anchor < 0) {
+  if (has_distinct_angle) {
+    PotentialNode new_potential;
+    new_potential.position = candidate;
+    new_potential.valid = true;
+    new_potential.unreachable = false;
+    anchor.potentials.push_back(new_potential);
+  }
+}
+
+bool MissionFsmNode::node_has_resolvable_potential(int node_id) const {
+  const auto it = graph_nodes_.find(node_id);
+  if (it == graph_nodes_.end()) {
+    return false;
+  }
+  for (const auto &pot : it->second.potentials) {
+    if (!pot.unreachable) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool MissionFsmNode::pop_next_potential_for_node(int node_id, geometry_msgs::msg::Point &goal_out) {
+  auto it = graph_nodes_.find(node_id);
+  if (it == graph_nodes_.end()) {
     return false;
   }
 
-  promote_potential_node(best_anchor);
-  return true;
+  auto &pots = it->second.potentials;
+  for (auto pot_it = pots.begin(); pot_it != pots.end(); ++pot_it) {
+    if (pot_it->unreachable) {
+      continue;
+    }
+    goal_out = pot_it->position;
+    pots.erase(pot_it);
+    return true;
+  }
+  return false;
 }
 
 std::vector<int> MissionFsmNode::compute_shortest_path_nodes(int start_node, int goal_node) const {
@@ -1531,7 +1560,7 @@ void MissionFsmNode::reset_graph_to_entrance() {
 
   CheckpointNode entrance = graph_nodes_[entrance_node_id_];
   entrance.edges.clear();
-  entrance.potential = PotentialNode{};
+  entrance.potentials.clear();
   entrance.is_dead_end = true;
 
   graph_nodes_.clear();
@@ -1540,6 +1569,7 @@ void MissionFsmNode::reset_graph_to_entrance() {
   current_node_id_ = entrance_node_id_;
   previous_node_id_ = entrance_node_id_;
   travel_mode_ = false;
+  potential_resolution_node_id_ = -1;
   travel_path_.clear();
 }
 
@@ -1560,18 +1590,15 @@ void MissionFsmNode::update_checkpoint_graph() {
     }
 
     if (last_visited_node_id_ == current_node_id_) {
-      // Rule l should not apply while stuck suppression is active.
       if (!suppress_rule_l_) {
         auto &node = graph_nodes_[current_node_id_];
-        if (node.potential.valid && !node.potential.unreachable) {
-          promote_potential_node(current_node_id_);
+        if (node_has_resolvable_potential(current_node_id_)) {
+          potential_resolution_node_id_ = current_node_id_;
         } else if (node.edges.size() <= 1 && !node.is_dead_end) {
-          // Backtracking into the same node with no potential means a dead-end.
           node.is_dead_end = true;
         }
       }
     } else {
-      // Entered a different node: clear stuck suppression and resume normal rule-l handling.
       suppress_rule_l_ = false;
     }
 
@@ -1600,6 +1627,7 @@ void MissionFsmNode::update_checkpoint_graph() {
 void MissionFsmNode::update_mode_decision() {
   if (last_visited_node_id_ < 0 || graph_nodes_.count(last_visited_node_id_) == 0) {
     travel_mode_ = false;
+    potential_resolution_node_id_ = -1;
     return;
   }
 
@@ -1612,20 +1640,47 @@ void MissionFsmNode::update_mode_decision() {
   }
 
   if (single_edge_nodes.empty()) {
-    if (!promote_closest_potential_node()) {
-      bool has_any_potential = false;
-      for (const auto &entry : graph_nodes_) {
-        has_any_potential = has_any_potential || entry.second.potential.valid;
+    int closest_potential_node = -1;
+    double best_dist = std::numeric_limits<double>::max();
+    for (const auto &entry : graph_nodes_) {
+      if (!node_has_resolvable_potential(entry.first)) {
+        continue;
       }
-      if (!has_any_potential) {
-        reset_graph_to_entrance();
+      const double d = calculate_distance(current_pose_.position, entry.second.position);
+      if (d < best_dist) {
+        best_dist = d;
+        closest_potential_node = entry.first;
       }
     }
+
+    if (closest_potential_node < 0) {
+      reset_graph_to_entrance();
+      travel_mode_ = false;
+      potential_resolution_node_id_ = -1;
+      travel_path_.clear();
+      return;
+    }
+
+    potential_resolution_node_id_ = closest_potential_node;
+    const int start_node = (current_node_id_ >= 0) ? current_node_id_ : last_visited_node_id_;
+    if (start_node != closest_potential_node) {
+      auto path = compute_shortest_path_nodes(start_node, closest_potential_node);
+      if (path.size() > 1) {
+        travel_mode_ = true;
+        travel_path_.clear();
+        for (size_t i = 1; i < path.size(); ++i) {
+          travel_path_.push_back(path[i]);
+        }
+        return;
+      }
+    }
+
     travel_mode_ = false;
     travel_path_.clear();
     return;
   }
 
+  potential_resolution_node_id_ = -1;
   const bool in_node_with_one_edge = (current_node_id_ >= 0 && graph_nodes_.count(current_node_id_) > 0 &&
                                       (graph_nodes_[current_node_id_].edges.size() + (graph_nodes_[current_node_id_].is_dead_end ? 1 : 0) == 1));
   const bool outside_node = (current_node_id_ < 0);
@@ -1671,10 +1726,12 @@ void MissionFsmNode::update_mode_decision() {
 
 void MissionFsmNode::mark_potential_node_unreachable_near(const geometry_msgs::msg::Point &pos) {
   for (auto &entry : graph_nodes_) {
-    auto &pot = entry.second.potential;
-    if (pot.valid && calculate_distance(pot.position, pos) <= node_radius_) {
-      pot = PotentialNode{};
-    }
+    auto &pots = entry.second.potentials;
+    pots.erase(std::remove_if(pots.begin(), pots.end(),
+                              [&](const PotentialNode &pot) {
+                                return calculate_distance(pot.position, pos) <= node_radius_;
+                              }),
+               pots.end());
   }
 }
 
