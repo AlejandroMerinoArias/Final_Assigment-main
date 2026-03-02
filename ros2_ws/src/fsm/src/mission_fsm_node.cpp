@@ -64,6 +64,8 @@ MissionFsmNode::MissionFsmNode()
   node_radius_ = this->get_parameter("node_radius").as_double();
   this->declare_parameter("max_potential_node_range", max_potential_node_range_);
   max_potential_node_range_ = this->get_parameter("max_potential_node_range").as_double();
+  this->declare_parameter("potential_angle_threshold_deg", potential_angle_threshold_deg_);
+  potential_angle_threshold_deg_ = this->get_parameter("potential_angle_threshold_deg").as_double();
   this->declare_parameter("seen_point_timeout_s", seen_point_timeout_s_);
   seen_point_timeout_s_ = this->get_parameter("seen_point_timeout_s").as_double();
 
@@ -1466,7 +1468,8 @@ void MissionFsmNode::register_potential_node_for_anchor(const geometry_msgs::msg
                                              pot.position.x - anchor.position.x);
     const double existing_radius = calculate_distance(anchor.position, pot.position);
     const double delta = angle_delta(candidate_angle, existing_angle);
-    if (delta < (kPi / 3.0)) {
+    const double angle_threshold = std::clamp(potential_angle_threshold_deg_, 1.0, 179.0) * (kPi / 180.0);
+    if (delta < angle_threshold) {
       if (candidate_radius > existing_radius) {
         pot.position = candidate;
         pot.unreachable = false;
