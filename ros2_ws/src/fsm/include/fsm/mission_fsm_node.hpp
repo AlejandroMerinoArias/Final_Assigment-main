@@ -8,6 +8,7 @@
 #include <geometry_msgs/msg/point_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <nav_msgs/msg/path.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/empty.hpp>
@@ -16,6 +17,8 @@
 #include <trajectory_msgs/msg/multi_dof_joint_trajectory_point.hpp>
 #include <visualization_msgs/msg/marker.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
+
+#include <rclcpp/time.hpp>
 
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
@@ -89,6 +92,7 @@ private:
   void exploration_goal_callback(
       const geometry_msgs::msg::PoseStamped::SharedPtr msg);
   void start_mission_callback(const std_msgs::msg::Empty::SharedPtr msg);
+  void depth_points_callback(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
   void timer_callback();
   void request_exploration_goal();
 
@@ -148,6 +152,8 @@ private:
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr start_mission_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr
       exploration_map_ready_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr
+      depth_points_sub_;
 
   // --- Service Clients ---
   rclcpp::Client<exploring::srv::GetExplorationGoal>::SharedPtr
@@ -242,6 +248,11 @@ private:
   double nodes_distance_ = 30.0;
   double node_radius_ = 10.0;
   bool macroplanning_enabled_ = true;
+  double max_potential_node_range_ = 60.0;
+  geometry_msgs::msg::Point latest_seen_point_;
+  bool latest_seen_point_valid_ = false;
+  rclcpp::Time latest_seen_point_stamp_;
+  double seen_point_timeout_s_ = 1.0;
 };
 
 } // namespace control

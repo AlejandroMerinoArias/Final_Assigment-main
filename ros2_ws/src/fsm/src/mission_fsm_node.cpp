@@ -3,6 +3,8 @@
 #include <limits>
 #include <queue>
 
+#include <sensor_msgs/point_cloud2_iterator.hpp>
+
 namespace control {
 
 MissionFsmNode::MissionFsmNode()
@@ -59,6 +61,10 @@ MissionFsmNode::MissionFsmNode()
   nodes_distance_ = this->get_parameter("nodes_distance").as_double();
   this->declare_parameter("node_radius", node_radius_);
   node_radius_ = this->get_parameter("node_radius").as_double();
+  this->declare_parameter("max_potential_node_range", max_potential_node_range_);
+  max_potential_node_range_ = this->get_parameter("max_potential_node_range").as_double();
+  this->declare_parameter("seen_point_timeout_s", seen_point_timeout_s_);
+  seen_point_timeout_s_ = this->get_parameter("seen_point_timeout_s").as_double();
 
   // Cave entrance - Main entrance
   cave_entrance_.x = -320.0;
@@ -95,6 +101,11 @@ MissionFsmNode::MissionFsmNode()
         RCLCPP_INFO(this->get_logger(), "Exploration map_ready flag set to: %s",
                     exploration_map_ready_ ? "true" : "false");
       });
+
+
+  depth_points_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
+      "/camera/depth/points_world", rclcpp::SensorDataQoS(),
+      std::bind(&MissionFsmNode::depth_points_callback, this, std::placeholders::_1));
 
   // --- Service Clients ---
   exploration_goal_client_ =
@@ -341,6 +352,53 @@ void MissionFsmNode::exploration_goal_callback(
               "(distance=%.2f m)",
               planner_goal.pose.position.x, planner_goal.pose.position.y,
               planner_goal.pose.position.z, goal_dist);
+}
+
+
+void MissionFsmNode::depth_points_callback(
+    const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
+  if (!macroplanning_enabled_ || !pose_received_ || msg->width == 0 || msg->data.empty()) {
+    return;
+  }
+
+  geometry_msgs::msg::Point best_point;
+  bool found = false;
+  double best_dist = 0.0;
+
+  sensor_msgs::PointCloud2ConstIterator<float> iter_x(*msg, "x");
+  sensor_msgs::PointCloud2ConstIterator<float> iter_y(*msg, "y");
+  sensor_msgs::PointCloud2ConstIterator<float> iter_z(*msg, "z");
+
+  for (; iter_x != iter_x.end(); ++iter_x, ++iter_y, ++iter_z) {
+    const float x = *iter_x;
+    const float y = *iter_y;
+    const float z = *iter_z;
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
+      continue;
+    }
+
+    geometry_msgs::msg::Point candidate;
+    candidate.x = static_cast<double>(x);
+    candidate.y = static_cast<double>(y);
+    candidate.z = static_cast<double>(z);
+
+    const double d = calculate_distance(candidate, current_pose_.position);
+    if (d > max_potential_node_range_) {
+      continue;
+    }
+
+    if (!found || d > best_dist) {
+      best_dist = d;
+      best_point = candidate;
+      found = true;
+    }
+  }
+
+  if (found) {
+    latest_seen_point_ = best_point;
+    latest_seen_point_valid_ = true;
+    latest_seen_point_stamp_ = this->now();
+  }
 }
 
 void MissionFsmNode::start_mission_callback(
@@ -942,7 +1000,7 @@ void MissionFsmNode::publish_drone_marker() {
 void MissionFsmNode::publish_checkpoint_markers() {
   visualization_msgs::msg::MarkerArray marker_array;
 
-    visualization_msgs::msg::Marker single_edge_nodes_marker;
+  visualization_msgs::msg::Marker single_edge_nodes_marker;
   single_edge_nodes_marker.header.stamp = this->now();
   single_edge_nodes_marker.header.frame_id = "world";
   single_edge_nodes_marker.ns = "checkpoint_single_edge_nodes";
@@ -1380,6 +1438,7 @@ void MissionFsmNode::reset_graph_to_entrance() {
   graph_nodes_[entrance_node_id_] = entrance;
   last_visited_node_id_ = entrance_node_id_;
   current_node_id_ = entrance_node_id_;
+  previous_node_id_ = entrance_node_id_;
   travel_mode_ = false;
   travel_path_.clear();
 }
@@ -1423,6 +1482,12 @@ void MissionFsmNode::update_checkpoint_graph() {
       current_node_id_ = new_node;
       previous_node_id_ = new_node;
     }
+  }
+
+  if (last_visited_node_id_ >= 0 && graph_nodes_.count(last_visited_node_id_) > 0 &&
+      latest_seen_point_valid_ &&
+      (this->now() - latest_seen_point_stamp_).seconds() <= seen_point_timeout_s_) {
+    register_potential_node_for_anchor(latest_seen_point_);
   }
 }
 
