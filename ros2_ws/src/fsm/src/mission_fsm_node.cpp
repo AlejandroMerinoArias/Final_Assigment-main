@@ -1357,7 +1357,7 @@ int MissionFsmNode::create_checkpoint_node(const geometry_msgs::msg::Point &pos,
   double nearest_existing_dist = std::numeric_limits<double>::max();
   for (const auto &entry : graph_nodes_) {
     const double d = calculate_distance(entry.second.position, pos);
-    if (d <= nodes_distance_ && d < nearest_existing_dist) {
+    if (d < nodes_distance_ && d < nearest_existing_dist) {
       nearest_existing_dist = d;
       nearest_existing_id = entry.first;
     }
@@ -1607,6 +1607,38 @@ void MissionFsmNode::update_checkpoint_graph() {
   const auto containing = find_node_containing_position(current_pose_.position);
   current_node_id_ = containing.value_or(-1);
 
+  // Bootstrap phase: keep graph logic disabled until we have entrance + one in-cave node.
+  if (graph_nodes_.size() < 2) {
+    travel_mode_ = false;
+    potential_resolution_node_id_ = -1;
+    travel_path_.clear();
+    suppress_rule_l_ = false;
+
+    if (entrance_node_id_ >= 0 && graph_nodes_.count(entrance_node_id_) > 0) {
+      if (current_node_id_ == entrance_node_id_) {
+        last_visited_node_id_ = entrance_node_id_;
+      }
+      if (last_visited_node_id_ < 0) {
+        last_visited_node_id_ = entrance_node_id_;
+      }
+
+      if (last_visited_node_id_ == entrance_node_id_ && current_node_id_ < 0) {
+        const double d = calculate_distance(graph_nodes_[entrance_node_id_].position,
+                                            current_pose_.position);
+        if (d >= nodes_distance_) {
+          const int new_node = create_checkpoint_node(current_pose_.position, false);
+          if (new_node != entrance_node_id_) {
+            add_edge_between_nodes(entrance_node_id_, new_node);
+            last_visited_node_id_ = new_node;
+            current_node_id_ = new_node;
+            previous_node_id_ = new_node;
+          }
+        }
+      }
+    }
+    return;
+  }
+
   const bool entered_node = (current_node_id_ >= 0 && current_node_id_ != previous_node_id_);
 
   if (entered_node) {
@@ -1650,9 +1682,11 @@ void MissionFsmNode::update_checkpoint_graph() {
 }
 
 void MissionFsmNode::update_mode_decision() {
-  if (last_visited_node_id_ < 0 || graph_nodes_.count(last_visited_node_id_) == 0) {
+  if (last_visited_node_id_ < 0 || graph_nodes_.count(last_visited_node_id_) == 0 ||
+      graph_nodes_.size() < 2) {
     travel_mode_ = false;
     potential_resolution_node_id_ = -1;
+    travel_path_.clear();
     return;
   }
 
