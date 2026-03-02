@@ -1301,6 +1301,10 @@ void MissionFsmNode::request_exploration_goal() {
                     "Received exploration goal: [%.2f, %.2f, %.2f]",
                     strategic_goal_.x, strategic_goal_.y, strategic_goal_.z);
 
+        if (macroplanning_enabled_) {
+          register_potential_node_for_anchor(strategic_goal_);
+        }
+
         if (!try_activate_exploration_goal(strategic_goal_)) {
           goal_request_pending_ = false;
           request_exploration_goal();
