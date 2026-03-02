@@ -1419,6 +1419,18 @@ void MissionFsmNode::resume_explorer_mode_after_travel() {
   if (!explorer_mode_suspended_for_travel_) {
     return;
   }
+
+  const bool travel_still_leading =
+      travel_mode_ ||
+      (goal_active_ &&
+       (active_goal_source_ == GoalSource::TRAVEL ||
+        active_goal_source_ == GoalSource::POTENTIAL));
+  if (travel_still_leading) {
+    RCLCPP_DEBUG(this->get_logger(),
+                 "Keeping explorer mode suspended while macroplanning travel still leads.");
+    return;
+  }
+
   auto enable_msg = std_msgs::msg::Bool();
   enable_msg.data = true;
   enable_mapping_pub_->publish(enable_msg);
@@ -1571,7 +1583,10 @@ void MissionFsmNode::request_exploration_goal() {
         }
 
         // Check if still in EXPLORE state (might have transitioned)
-        if (current_state_ != MissionState::EXPLORE || travel_mode_) {
+        if (current_state_ != MissionState::EXPLORE || travel_mode_ ||
+            potential_resolution_node_id_ >= 0 ||
+            active_goal_source_ == GoalSource::TRAVEL ||
+            active_goal_source_ == GoalSource::POTENTIAL) {
           RCLCPP_DEBUG(
               this->get_logger(),
               "Ignoring exploration goal - EXPLORE no longer owns command chain.");
@@ -2272,7 +2287,7 @@ void MissionFsmNode::update_mode_decision() {
   const bool last_has_one_edge = (last_visited_node_id_ != entrance_node_id_ &&
                                 (graph_nodes_[last_visited_node_id_].edges.size() + (graph_nodes_[last_visited_node_id_].is_dead_end ? 1 : 0) == 1));
 
-  if (outside_node && last_has_one_edge) {
+  if (outside_node && last_has_one_edge && !was_travel_mode) {
     travel_mode_ = false;
     travel_path_.clear();
     resume_explorer_mode_after_travel();
