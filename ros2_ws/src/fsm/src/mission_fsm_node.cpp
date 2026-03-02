@@ -264,10 +264,12 @@ void MissionFsmNode::planner_status_callback(
 
     goal_active_ = false;
 
-    // If we're exploring, trigger the Z-retry recovery
+    // If we're exploring, trigger the Z-retry recovery for the *current* goal.
+    // Using start_refine_for_current_goal() keeps strategic_goal_ synchronized
+    // with the failing planner target (important for travel-mode goals).
     if (current_state_ == MissionState::EXPLORE ||
         current_state_ == MissionState::REFINE_GOAL) {
-      transition_to(MissionState::REFINE_GOAL);
+      start_refine_for_current_goal("planner reported PLAN_FAILED");
     }
   }
 }
@@ -633,6 +635,20 @@ void MissionFsmNode::update_state() {
                     "(distance=%.2f m, took %.1f s). Requesting next goal.",
                     current_goal_.x, current_goal_.y, current_goal_.z,
                     dist, time_since_goal_set);
+
+        // In travel mode, consume the front checkpoint only when we actually
+        // reach it (not when activation succeeds). This keeps the queue intact
+        // if planning fails and a retry is needed.
+        if (macroplanning_enabled_ && travel_mode_ && !travel_path_.empty()) {
+          const int reached_node_id = travel_path_.front();
+          if (graph_nodes_.count(reached_node_id) > 0 &&
+              calculate_distance(current_pose_.position,
+                                 graph_nodes_.at(reached_node_id).position) <=
+                  GOAL_REACHED_THRESHOLD) {
+            travel_path_.pop_front();
+          }
+        }
+
         goal_active_ = false;
         consecutive_too_close_rejections_ = 0;  // Reset counter on successful goal completion
         // Loop will trigger new request in next block
@@ -705,10 +721,8 @@ void MissionFsmNode::update_state() {
           RCLCPP_INFO(this->get_logger(),
                       "Travel mode: traversing to checkpoint node %d.",
                       next_node_id);
-          if (try_activate_exploration_goal(graph_nodes_.at(next_node_id).position,
-                                           true)) {
-            travel_path_.pop_front();
-          }
+          try_activate_exploration_goal(graph_nodes_.at(next_node_id).position,
+                                        true);
         } else {
           travel_path_.pop_front();
         }
