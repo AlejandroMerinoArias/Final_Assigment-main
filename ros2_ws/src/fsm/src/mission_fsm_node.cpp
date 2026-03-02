@@ -2096,19 +2096,24 @@ void MissionFsmNode::prune_potentials_within_node_distance_recursive() {
     return;
   }
 
-  bool removed_any = false;
-  do {
-    removed_any = false;
-    for (auto &entry : graph_nodes_) {
-      auto &pots = entry.second.potentials;
-      const auto old_size = pots.size();
-      pots.erase(std::remove_if(pots.begin(), pots.end(), [&](const PotentialNode &pot) {
-                   return !is_potential_valid_global(pot.position);
-                 }),
-                pots.end());
-      removed_any = removed_any || (pots.size() != old_size);
-    }
-  } while (removed_any);
+  std::vector<geometry_msgs::msg::Point> node_positions;
+  node_positions.reserve(graph_nodes_.size());
+  for (const auto &entry : graph_nodes_) {
+    node_positions.push_back(entry.second.position);
+  }
+
+  for (auto &entry : graph_nodes_) {
+    auto &pots = entry.second.potentials;
+    pots.erase(std::remove_if(pots.begin(), pots.end(), [&](const PotentialNode &pot) {
+                 for (const auto &node_pos : node_positions) {
+                   if (calculate_distance(pot.position, node_pos) < nodes_distance_) {
+                     return true;
+                   }
+                 }
+                 return false;
+               }),
+              pots.end());
+  }
 }
 
 bool MissionFsmNode::is_within_node_distance_of_any_node(const geometry_msgs::msg::Point &pos) const {
