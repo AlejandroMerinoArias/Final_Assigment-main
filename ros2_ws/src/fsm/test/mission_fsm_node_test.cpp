@@ -176,7 +176,7 @@ TEST_F(MissionFsmNodeTest, LanternDetectionInterruptsExplore) {
   EXPECT_EQ(last_state_, control::state_to_string(control::MissionState::LANTERN_FOUND));
 }
 
-TEST_F(MissionFsmNodeTest, PlannerFailureTriggersRefineGoal) {
+TEST_F(MissionFsmNodeTest, PlannerFailureWithoutActiveGoalIsIgnored) {
   // Fast forward to EXPLORE
   PublishOdom(0.0, 0.0, 0.0); // INIT -> TAKEOFF
   PublishStartSignal();
@@ -195,7 +195,7 @@ TEST_F(MissionFsmNodeTest, PlannerFailureTriggersRefineGoal) {
   
   Spin(std::chrono::milliseconds(100));
   
-  EXPECT_EQ(last_state_, control::state_to_string(control::MissionState::REFINE_GOAL));
+  EXPECT_EQ(last_state_, control::state_to_string(control::MissionState::EXPLORE));
 }
 
 TEST_F(MissionFsmNodeTest, FullMissionLifecycle) {
