@@ -2002,27 +2002,28 @@ void MissionFsmNode::update_mode_decision() {
   const bool last_has_one_edge = (last_visited_node_id_ != entrance_node_id_ &&
                                 (graph_nodes_[last_visited_node_id_].edges.size() + (graph_nodes_[last_visited_node_id_].is_dead_end ? 1 : 0) == 1));
 
-  if (in_node_with_one_edge || (outside_node && last_has_one_edge)) {
+  if (outside_node && last_has_one_edge) {
     travel_mode_ = false;
     travel_path_.clear();
     return;
   }
 
+  const int direction_anchor_node_id = (in_node_with_one_edge) ? current_node_id_ : last_visited_node_id_;
   geometry_msgs::msg::Point preferred_direction;
-  preferred_direction.x = current_pose_.position.x - graph_nodes_[last_visited_node_id_].position.x;
-  preferred_direction.y = current_pose_.position.y - graph_nodes_[last_visited_node_id_].position.y;
-  preferred_direction.z = current_pose_.position.z - graph_nodes_[last_visited_node_id_].position.z;
+  preferred_direction.x = current_pose_.position.x - graph_nodes_[direction_anchor_node_id].position.x;
+  preferred_direction.y = current_pose_.position.y - graph_nodes_[direction_anchor_node_id].position.y;
+  preferred_direction.z = current_pose_.position.z - graph_nodes_[direction_anchor_node_id].position.z;
 
-  const auto last_degree = graph_nodes_[last_visited_node_id_].edges.size() +
-                           (graph_nodes_[last_visited_node_id_].is_dead_end ? 1 : 0);
-  if (last_degree == 1 && !graph_nodes_[last_visited_node_id_].edges.empty()) {
-    const int predecessor_id = *graph_nodes_[last_visited_node_id_].edges.begin();
+  const auto anchor_degree = graph_nodes_[direction_anchor_node_id].edges.size() +
+                             (graph_nodes_[direction_anchor_node_id].is_dead_end ? 1 : 0);
+  if (anchor_degree == 1 && !graph_nodes_[direction_anchor_node_id].edges.empty()) {
+    const int predecessor_id = *graph_nodes_[direction_anchor_node_id].edges.begin();
     if (graph_nodes_.count(predecessor_id) > 0) {
-      preferred_direction.x = graph_nodes_[last_visited_node_id_].position.x -
+      preferred_direction.x = graph_nodes_[direction_anchor_node_id].position.x -
                               graph_nodes_[predecessor_id].position.x;
-      preferred_direction.y = graph_nodes_[last_visited_node_id_].position.y -
+      preferred_direction.y = graph_nodes_[direction_anchor_node_id].position.y -
                               graph_nodes_[predecessor_id].position.y;
-      preferred_direction.z = graph_nodes_[last_visited_node_id_].position.z -
+      preferred_direction.z = graph_nodes_[direction_anchor_node_id].position.z -
                               graph_nodes_[predecessor_id].position.z;
     }
   }
@@ -2033,13 +2034,16 @@ void MissionFsmNode::update_mode_decision() {
   double best_alignment = -std::numeric_limits<double>::max();
   double best_distance = std::numeric_limits<double>::max();
   for (const int leaf : single_edge_nodes) {
+    if (leaf == direction_anchor_node_id) {
+      continue;
+    }
     const auto &leaf_pos = graph_nodes_[leaf].position;
     const double d = calculate_distance(current_pose_.position, leaf_pos);
 
     double alignment = 0.0;
     if (preferred_norm > 1e-3) {
-      const double vx = leaf_pos.x - graph_nodes_[last_visited_node_id_].position.x;
-      const double vy = leaf_pos.y - graph_nodes_[last_visited_node_id_].position.y;
+      const double vx = leaf_pos.x - graph_nodes_[direction_anchor_node_id].position.x;
+      const double vy = leaf_pos.y - graph_nodes_[direction_anchor_node_id].position.y;
       const double vnorm = std::hypot(vx, vy);
       if (vnorm > 1e-3) {
         alignment = (vx * preferred_direction.x + vy * preferred_direction.y) /
@@ -2055,15 +2059,14 @@ void MissionFsmNode::update_mode_decision() {
     }
   }
 
-  const bool current_has_multi = current_node_id_ >= 0 && graph_nodes_[current_node_id_].edges.size() > 1;
-  const bool last_has_multi = graph_nodes_[last_visited_node_id_].edges.size() > 1;
-  if (!(current_has_multi && last_has_multi) || target_leaf < 0) {
+  const int start_node = (current_node_id_ >= 0) ? current_node_id_ : last_visited_node_id_;
+  if (start_node < 0 || graph_nodes_.count(start_node) == 0 || target_leaf < 0) {
     travel_mode_ = false;
     travel_path_.clear();
     return;
   }
 
-  auto path = compute_shortest_path_nodes(current_node_id_, target_leaf);
+  auto path = compute_shortest_path_nodes(start_node, target_leaf);
   if (path.size() <= 1) {
     travel_mode_ = false;
     travel_path_.clear();
