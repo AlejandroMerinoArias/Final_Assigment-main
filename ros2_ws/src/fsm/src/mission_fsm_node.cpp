@@ -658,6 +658,7 @@ void MissionFsmNode::on_state_enter(MissionState state) {
       goal_active_ = false;
       active_goal_source_ = GoalSource::EXPLORER;
       active_goal_anchor_node_id_ = -1;
+      potential_objective_timer_active_ = false;
       goal_request_pending_ = false;
       // Reset goal-selection tracking when (re)entering exploration
       reset_explorer_goal_filters();
@@ -738,6 +739,8 @@ void MissionFsmNode::on_state_exit(MissionState state) {
     current_goal_ = geometry_msgs::msg::Point();
     active_goal_source_ = GoalSource::EXPLORER;
     active_goal_anchor_node_id_ = -1;
+    potential_objective_timer_active_ = false;
+    potential_objective_anchor_node_id_ = -1;
     active_rrt_waypoints_.clear();
     clear_single_edge_priority_target();
     ++explorer_request_epoch_;
@@ -831,6 +834,17 @@ void MissionFsmNode::update_state() {
 
     // Check if we've reached the current exploration goal
     if (goal_active_) {
+      if (active_goal_source_ == GoalSource::POTENTIAL &&
+          potential_objective_timer_active_) {
+        const double potential_objective_age =
+            (this->now() - potential_objective_start_time_).seconds();
+        if (potential_objective_age > POTENTIAL_OBJECTIVE_TIMEOUT_SECONDS) {
+          drop_active_potential_objective(
+              "cumulative objective timeout exceeded 60 seconds");
+          break;
+        }
+      }
+
       if ((active_goal_source_ == GoalSource::TRAVEL ||
            active_goal_source_ == GoalSource::POTENTIAL) &&
           monitor_macroplanning_rrt_waypoints()) {
@@ -909,6 +923,8 @@ void MissionFsmNode::update_state() {
         goal_active_ = false;
         active_goal_source_ = GoalSource::EXPLORER;
         active_goal_anchor_node_id_ = -1;
+        potential_objective_timer_active_ = false;
+        potential_objective_anchor_node_id_ = -1;
         consecutive_too_close_rejections_ = 0;  // Reset counter on successful goal completion
         // Loop will trigger new request in next block
       }
@@ -948,6 +964,8 @@ void MissionFsmNode::update_state() {
         travel_mode_ = false;
         active_goal_source_ = GoalSource::EXPLORER;
         active_goal_anchor_node_id_ = -1;
+        potential_objective_timer_active_ = false;
+        potential_objective_anchor_node_id_ = -1;
       }
       // THIRD: Check if drone is stuck (not making progress toward goal)
       else if (time_since_goal_set > STUCK_DETECTION_SECONDS) {  // After 10 seconds, check movement
@@ -1441,6 +1459,41 @@ bool MissionFsmNode::monitor_macroplanning_rrt_waypoints() {
   return false;
 }
 
+void MissionFsmNode::drop_active_potential_objective(const std::string &reason) {
+  if (active_goal_source_ != GoalSource::POTENTIAL) {
+    return;
+  }
+
+  const int anchor_node = active_goal_anchor_node_id_;
+  const geometry_msgs::msg::Point dropped_goal = current_goal_;
+
+  RCLCPP_WARN(this->get_logger(),
+              "Dropping potential objective [%.2f, %.2f, %.2f] (%s).",
+              dropped_goal.x, dropped_goal.y, dropped_goal.z,
+              reason.c_str());
+
+  cancel_pub_->publish(std_msgs::msg::Empty());
+  goal_active_ = false;
+  active_rrt_waypoints_.clear();
+  mark_potential_node_unreachable_near(dropped_goal);
+
+  geometry_msgs::msg::Point next_potential_goal;
+  if (anchor_node >= 0 &&
+      pop_next_potential_for_node(anchor_node, next_potential_goal) &&
+      try_activate_exploration_goal(next_potential_goal, true,
+                                    GoalSource::POTENTIAL,
+                                    anchor_node)) {
+    return;
+  }
+
+  potential_resolution_node_id_ = -1;
+  travel_mode_ = false;
+  active_goal_source_ = GoalSource::EXPLORER;
+  active_goal_anchor_node_id_ = -1;
+  potential_objective_timer_active_ = false;
+  potential_objective_anchor_node_id_ = -1;
+}
+
 void MissionFsmNode::publish_state() {
   std_msgs::msg::String state_msg;
   state_msg.data = state_to_string(current_state_);
@@ -1786,6 +1839,25 @@ bool MissionFsmNode::try_activate_exploration_goal(const geometry_msgs::msg::Poi
   goal_active_ = true;
   active_goal_source_ = source;
   active_goal_anchor_node_id_ = anchor_node_id;
+
+  if (source == GoalSource::POTENTIAL) {
+    const bool same_anchor =
+        potential_objective_timer_active_ &&
+        potential_objective_anchor_node_id_ == anchor_node_id;
+    const bool same_goal =
+        same_anchor &&
+        calculate_distance(potential_objective_goal_, planner_goal.pose.position) <=
+            GOAL_REACHED_THRESHOLD;
+    if (!same_goal) {
+      potential_objective_start_time_ = this->now();
+      potential_objective_goal_ = planner_goal.pose.position;
+      potential_objective_anchor_node_id_ = anchor_node_id;
+      potential_objective_timer_active_ = true;
+    }
+  } else {
+    potential_objective_timer_active_ = false;
+    potential_objective_anchor_node_id_ = -1;
+  }
 
   RCLCPP_INFO(
       this->get_logger(),
