@@ -40,6 +40,7 @@ namespace planning {
 struct FrontierCandidate {
   octomap::point3d position;
   double utility = 0.0;
+  bool is_priority_target = false;
 };
 
 struct FailedGoalRegion {

@@ -181,7 +181,6 @@ private:
     std::set<int> edges;
     bool is_dead_end = false;
     bool is_provisional = false;
-    int visit_count = 0;
     std::vector<PotentialNode> potentials;
   };
 

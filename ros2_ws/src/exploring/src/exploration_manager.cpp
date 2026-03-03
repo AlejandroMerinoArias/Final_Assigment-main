@@ -377,6 +377,12 @@ void ExplorationManager::handle_get_goal(
   int effective_candidates = num_candidates_ + (consecutive_failures_ * 10);
   
   auto candidates = sample_candidates(downsampled, effective_candidates);
+  if (priority_target_) {
+    FrontierCandidate priority_cand;
+    priority_cand.position = *priority_target_;
+    priority_cand.is_priority_target = true;
+    candidates.push_back(priority_cand);
+  }
 
   // 3.5. Compute stuck mode and apply dynamic filter relaxation
   auto [stuck_mode, severity] = computeStuckMode();
@@ -484,6 +490,15 @@ void ExplorationManager::handle_get_goal(
       filt_los = 0, filt_recent = 0, filt_backtrack = 0;
 
   for (auto &cand : candidates) {
+    if (cand.is_priority_target) {
+      cand.utility = std::numeric_limits<double>::max() / 4.0;
+      if (cand.utility > best_utility) {
+        best_utility = cand.utility;
+        best_candidate = &cand;
+      }
+      ++num_evaluated;
+      continue;
+    }
     // Filter: repeated-failure regions (expanded around goals that failed many times)
     if (is_in_failed_region(cand.position)) {
       ++filt_blacklist;

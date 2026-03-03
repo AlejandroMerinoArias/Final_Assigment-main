@@ -2690,10 +2690,6 @@ void MissionFsmNode::register_potential_node_for_anchor(const geometry_msgs::msg
   }
 
   auto &anchor = graph_nodes_[anchor_id];
-  if (anchor.visit_count > 3) {
-    return;
-  }
-
   if (!is_potential_valid_global(candidate)) {
     return;
   }
@@ -2879,10 +2875,6 @@ void MissionFsmNode::update_checkpoint_graph() {
   // Always run core graph processing while inside a node. Restrict
   // edge-creation and rule-L entry semantics to true node transitions.
   if (inside_any_node) {
-    if (entered_node && graph_nodes_.count(current_node_id_) > 0) {
-      graph_nodes_[current_node_id_].visit_count += 1;
-    }
-
     if (last_visited_node_id_ >= 0 && last_visited_node_id_ != current_node_id_) {
       if (entered_node) {
         add_edge_between_nodes(last_visited_node_id_, current_node_id_);
