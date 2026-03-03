@@ -74,6 +74,9 @@ MissionFsmNode::MissionFsmNode()
   goal_request_timeout_s_ = this->get_parameter("goal_request_timeout_s").as_double();
   this->declare_parameter("force_explorer_timeout_s", force_explorer_timeout_s_);
   force_explorer_timeout_s_ = this->get_parameter("force_explorer_timeout_s").as_double();
+  this->declare_parameter("single_edge_priority_reached_radius", single_edge_priority_reached_radius_);
+  single_edge_priority_reached_radius_ =
+      this->get_parameter("single_edge_priority_reached_radius").as_double();
 
   // Cave entrance - Main entrance
   cave_entrance_.x = -320.0;
@@ -149,6 +152,8 @@ MissionFsmNode::MissionFsmNode()
 
   blacklist_goal_pub_ = this->create_publisher<geometry_msgs::msg::PointStamped>(
       "/exploration/blacklist_goal", 10);
+  priority_target_pub_ = this->create_publisher<geometry_msgs::msg::PointStamped>(
+      "/exploration/priority_target", 10);
 
   // --- Timer: 10 Hz main loop ---
   timer_ =
@@ -657,6 +662,7 @@ void MissionFsmNode::on_state_exit(MissionState state) {
     current_goal_ = geometry_msgs::msg::Point();
     active_goal_source_ = GoalSource::EXPLORER;
     active_goal_anchor_node_id_ = -1;
+    clear_single_edge_priority_target();
     ++explorer_request_epoch_;
   }
 }
@@ -715,6 +721,19 @@ void MissionFsmNode::update_state() {
       prune_potential_nodes_near(current_pose_.position, potential_prune_radius);
       update_checkpoint_graph();
       update_mode_decision();
+
+      if (single_edge_priority_target_node_id_ >= 0 &&
+          graph_nodes_.count(single_edge_priority_target_node_id_) > 0) {
+        const double d_target = calculate_distance(
+            current_pose_.position,
+            graph_nodes_.at(single_edge_priority_target_node_id_).position);
+        if (d_target <= single_edge_priority_reached_radius_) {
+          RCLCPP_INFO(this->get_logger(),
+                      "Reached single-edge priority node radius (%.2f m <= %.2f m).",
+                      d_target, single_edge_priority_reached_radius_);
+          clear_single_edge_priority_target();
+        }
+      }
     }
 
     // Check if we've found all lanterns
@@ -759,6 +778,11 @@ void MissionFsmNode::update_state() {
               travel_mode_ = false;
               travel_path_.clear();
             }
+          }
+
+          if (travel_path_.empty()) {
+            travel_mode_ = false;
+            resume_explorer_mode_after_travel();
           }
         }
 
@@ -928,9 +952,17 @@ void MissionFsmNode::update_state() {
                         next_node_id);
             clear_node_relocation_state(next_node_id);
             travel_path_.pop_front();
+            if (travel_path_.empty()) {
+              travel_mode_ = false;
+              resume_explorer_mode_after_travel();
+            }
           }
         } else {
           travel_path_.pop_front();
+          if (travel_path_.empty()) {
+            travel_mode_ = false;
+            resume_explorer_mode_after_travel();
+          }
         }
       } else if (macroplanning_enabled_ && potential_resolution_node_id_ >= 0 &&
                  current_node_id_ == potential_resolution_node_id_) {
@@ -2540,6 +2572,7 @@ void MissionFsmNode::update_mode_decision() {
   }
 
   if (single_edge_nodes.empty()) {
+    clear_single_edge_priority_target();
     const int start_node = (current_node_id_ >= 0) ? current_node_id_ : last_visited_node_id_;
     if (start_node < 0 || graph_nodes_.count(start_node) == 0) {
       travel_mode_ = false;
@@ -2674,6 +2707,7 @@ void MissionFsmNode::update_mode_decision() {
 
   const int start_node = (current_node_id_ >= 0) ? current_node_id_ : last_visited_node_id_;
   if (start_node < 0 || graph_nodes_.count(start_node) == 0 || target_leaf < 0) {
+    clear_single_edge_priority_target();
     travel_mode_ = false;
     travel_path_.clear();
     resume_explorer_mode_after_travel();
@@ -2681,7 +2715,17 @@ void MissionFsmNode::update_mode_decision() {
   }
 
   auto path = compute_shortest_path_nodes(start_node, target_leaf);
-  if (path.size() <= 1) {
+  if (path.empty()) {
+    clear_single_edge_priority_target();
+    travel_mode_ = false;
+    travel_path_.clear();
+    resume_explorer_mode_after_travel();
+    return;
+  }
+
+  set_single_edge_priority_target(target_leaf);
+
+  if (path.size() <= 2) {
     travel_mode_ = false;
     travel_path_.clear();
     resume_explorer_mode_after_travel();
@@ -2690,12 +2734,48 @@ void MissionFsmNode::update_mode_decision() {
 
   travel_mode_ = true;
   travel_path_.clear();
-  for (size_t i = 1; i < path.size(); ++i) {
+  for (size_t i = 1; i + 1 < path.size(); ++i) {
     travel_path_.push_back(path[i]);
   }
   if (!was_travel_mode) {
     suspend_explorer_mode_for_travel();
   }
+}
+
+void MissionFsmNode::set_single_edge_priority_target(int target_node_id) {
+  if (target_node_id < 0 || graph_nodes_.count(target_node_id) == 0) {
+    return;
+  }
+  if (single_edge_priority_target_node_id_ == target_node_id) {
+    return;
+  }
+
+  single_edge_priority_target_node_id_ = target_node_id;
+  geometry_msgs::msg::PointStamped msg;
+  msg.header.stamp = this->now();
+  msg.header.frame_id = "world";
+  msg.point = graph_nodes_.at(target_node_id).position;
+  priority_target_pub_->publish(msg);
+
+  RCLCPP_INFO(this->get_logger(),
+              "Activated single-edge exploration priority toward node %d at [%.2f, %.2f, %.2f].",
+              target_node_id, msg.point.x, msg.point.y, msg.point.z);
+}
+
+void MissionFsmNode::clear_single_edge_priority_target() {
+  if (single_edge_priority_target_node_id_ < 0) {
+    return;
+  }
+
+  single_edge_priority_target_node_id_ = -1;
+  geometry_msgs::msg::PointStamped msg;
+  msg.header.stamp = this->now();
+  msg.header.frame_id = "world";
+  msg.point.x = std::numeric_limits<double>::quiet_NaN();
+  msg.point.y = std::numeric_limits<double>::quiet_NaN();
+  msg.point.z = std::numeric_limits<double>::quiet_NaN();
+  priority_target_pub_->publish(msg);
+  RCLCPP_INFO(this->get_logger(), "Cleared single-edge exploration priority target.");
 }
 
 void MissionFsmNode::mark_potential_node_unreachable_near(const geometry_msgs::msg::Point &pos) {

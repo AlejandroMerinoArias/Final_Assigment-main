@@ -20,6 +20,7 @@ graph TD
         octomap["/octomap_binary<br/>(3D OctoMap)"]
         tf["/tf<br/>(Drone Pose: world→body)"]
         blacklist["/exploration/blacklist_goal<br/>(from FSM)"]
+        priority_target["/exploration/priority_target<br/>(from FSM macroplanning)"]
     end
 
     subgraph "Exploration Manager (Dai-Lite Pipeline)"
@@ -40,6 +41,7 @@ graph TD
     octomap --> detect
     tf --> detect
     blacklist --> filter
+    priority_target --> score
     detect --> downsample
     downsample --> sample
     sample --> stuck
@@ -157,6 +159,7 @@ All constraints have **hard lower bounds** to maintain absolute minimum safety. 
 |-------|------|-------------|
 | `/octomap_binary` | `octomap_msgs/Octomap` | 3D occupancy map (latched) |
 | `/exploration/blacklist_goal` | `geometry_msgs/PointStamped` | Goals permanently blacklisted by FSM |
+| `/exploration/priority_target` | `geometry_msgs/PointStamped` | Optional high-priority target injected by FSM macroplanning |
 
 ### Published Topics
 
