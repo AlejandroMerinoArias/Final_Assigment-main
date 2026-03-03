@@ -2096,23 +2096,27 @@ void MissionFsmNode::prune_potentials_within_node_distance_recursive() {
     return;
   }
 
+  // Snapshot all current node positions once, then filter every potential
+  // against every node using the requested "point vs point" rule.
   std::vector<geometry_msgs::msg::Point> node_positions;
   node_positions.reserve(graph_nodes_.size());
   for (const auto &entry : graph_nodes_) {
     node_positions.push_back(entry.second.position);
   }
 
-  for (auto &entry : graph_nodes_) {
-    auto &pots = entry.second.potentials;
-    pots.erase(std::remove_if(pots.begin(), pots.end(), [&](const PotentialNode &pot) {
-                 for (const auto &node_pos : node_positions) {
-                   if (calculate_distance(pot.position, node_pos) < nodes_distance_) {
-                     return true;
-                   }
-                 }
-                 return false;
-               }),
-              pots.end());
+  for (auto &anchor_entry : graph_nodes_) {
+    auto &potentials = anchor_entry.second.potentials;
+    potentials.erase(std::remove_if(potentials.begin(), potentials.end(),
+                                    [&](const PotentialNode &potential) {
+                                      for (const auto &node_position : node_positions) {
+                                        if (calculate_distance(potential.position, node_position) <
+                                            nodes_distance_) {
+                                          return true;
+                                        }
+                                      }
+                                      return false;
+                                    }),
+                     potentials.end());
   }
 }
 
@@ -2435,6 +2439,9 @@ void MissionFsmNode::update_checkpoint_graph() {
       add_edge_between_nodes(last_visited_node_id_, current_node_id_);
     }
 
+    // Mandatory re-filter each time we reach a checkpoint node so stale
+    // potentials too close to any node are removed immediately.
+    prune_potentials_within_node_distance_recursive();
     simplify_checkpoint_graph();
 
     const auto remapped_containing = find_node_containing_position(current_pose_.position);
