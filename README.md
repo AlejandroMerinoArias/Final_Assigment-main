@@ -97,7 +97,7 @@ ros2 launch simulation simulation.launch.py
     ros2 topic pub --once /mission/start std_msgs/msg/Empty "{}"
     ```
 
-    Current FSM stop condition is configured in code to end exploration after **1 unique lantern** is confirmed, then it returns and lands.
+    Current FSM stop condition is configured in code to end exploration after **4 unique lanterns** are confirmed (`TARGET_LANTERN_COUNT` in `mission_fsm_node.hpp`), then it returns and lands.
 
 ### Building with Docker
 
@@ -127,7 +127,7 @@ Based on the project requirements (Unity simulation, semantic camera, finding ob
 
 This design ensures **modularity** and **standard compliance**.
 
-**Mission Flow:** The system starts with a predefined waypoint phase (takeoff + cave entrance), then switches to autonomous exploration. During exploration, `mission_fsm_node` requests goals from the exploration service, routes goals to the selected planner (`RRT` or `A*`), applies refinement/watchdog recovery when needed, and maintains a macroplanning checkpoint graph for robust cave traversal. After mission completion (currently 1 unique lantern), FSM first attempts a graph-based return corridor to the cave entrance, then returns to start and lands.
+**Mission Flow:** The system starts with a predefined waypoint phase (takeoff + cave entrance), then switches to autonomous exploration. During exploration, `mission_fsm_node` requests goals from the exploration service, routes goals to the selected planner (`RRT` or `A*`), applies refinement/watchdog recovery when needed, and maintains a macroplanning checkpoint graph for robust cave traversal. After mission completion (currently 4 unique lanterns), FSM first attempts a graph-based return corridor to the cave entrance, then returns to start and lands.
 
 ---
 
@@ -276,7 +276,33 @@ graph TD
 
 ---
 
-### 3. Package Documentation
+
+### 3. Mission Control Loop (Runtime Behavior)
+
+```mermaid
+flowchart LR
+    A[INIT/TAKEOFF/GOTO_ENTRANCE] --> B[EXPLORE]
+    B --> C[/exploration/get_goal service/]
+    C --> D[Exploration Manager returns candidate]
+    D --> E[Planner goal publish<br/>/planner/goal or /planner_a/goal]
+    E --> F[/planner/status + waypoints]
+    F -->|GOAL_REACHED| B
+    F -->|PLAN_FAILED or timeout| G[REFINE_GOAL (Z-retry)]
+    G -->|retry succeeded| B
+    G -->|all retries failed| H[Blacklist goal]
+    H --> B
+
+    B --> I{4 unique lanterns found?}
+    I -->|Yes| J[Checkpoint-graph return to cave entrance]
+    J --> K[RETURN to start XY]
+    K --> L[LAND]
+```
+
+This control loop is intentionally layered: exploration can keep operating even when individual goals fail, while graph-based travel and frozen-watchdog fallback reduce long-horizon mission deadlocks.
+
+---
+
+### 4. Package Documentation
 
 The intricate details of each subsystem - including nodes, topics, services, parameters, and algorithms - are documented in their respective package `README.md` files:
 
@@ -289,7 +315,7 @@ The intricate details of each subsystem - including nodes, topics, services, par
 
 ---
 
-### 4. The `tf2` Tree
+### 5. The `tf2` Tree
 
 The following coordinate frames are used in the system:
 
