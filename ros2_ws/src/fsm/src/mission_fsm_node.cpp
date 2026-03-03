@@ -94,6 +94,9 @@ MissionFsmNode::MissionFsmNode()
   node_radius_ = this->get_parameter("node_radius").as_double();
   this->declare_parameter("max_potential_node_range", max_potential_node_range_);
   max_potential_node_range_ = this->get_parameter("max_potential_node_range").as_double();
+  this->declare_parameter("potential_node_backoff_distance", potential_node_backoff_distance_);
+  potential_node_backoff_distance_ =
+      this->get_parameter("potential_node_backoff_distance").as_double();
   this->declare_parameter("potential_angle_threshold_deg", potential_angle_threshold_deg_);
   potential_angle_threshold_deg_ = this->get_parameter("potential_angle_threshold_deg").as_double();
   this->declare_parameter("seen_point_timeout_s", seen_point_timeout_s_);
@@ -541,7 +544,20 @@ void MissionFsmNode::depth_points_callback(
   }
 
   if (found) {
-    latest_seen_point_ = best_point;
+    geometry_msgs::msg::Point backed_off_point = best_point;
+    const double line_dist = calculate_distance(best_point, current_pose_.position);
+    if (line_dist > 1e-6 && potential_node_backoff_distance_ > 0.0) {
+      const double applied_backoff =
+          std::min(potential_node_backoff_distance_, std::max(0.0, line_dist - 0.1));
+      const double ux = (current_pose_.position.x - best_point.x) / line_dist;
+      const double uy = (current_pose_.position.y - best_point.y) / line_dist;
+      const double uz = (current_pose_.position.z - best_point.z) / line_dist;
+      backed_off_point.x += ux * applied_backoff;
+      backed_off_point.y += uy * applied_backoff;
+      backed_off_point.z += uz * applied_backoff;
+    }
+
+    latest_seen_point_ = backed_off_point;
     latest_seen_point_valid_ = true;
     latest_seen_point_stamp_ = this->now();
   }

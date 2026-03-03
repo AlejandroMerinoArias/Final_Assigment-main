@@ -196,6 +196,7 @@ This logic is specific to single-edge-node dispatching; other travel-mode uses a
 | `min_exploration_goal_distance` | `2.0` | Minimum 2D distance (m) for accepted exploration goals |
 | `explore_goal_selection_timeout` | *(declared)* | Seconds without a successful goal before emitting a stuck warning |
 | `explore_goal_selection_max_failures` | *(declared)* | Consecutive service failures before emitting a stuck warning |
+| `potential_node_backoff_distance` | `1.5` | Pullback distance (m) from the farthest depth point toward the drone when creating potential macroplanning nodes, to avoid wall-hugging targets. |
 
 > **Note:** The cave entrance position (`[-320.0, 10.0, 18.0]`) and takeoff altitude (`2.0 m`) are currently hardcoded in the constructor.
 
