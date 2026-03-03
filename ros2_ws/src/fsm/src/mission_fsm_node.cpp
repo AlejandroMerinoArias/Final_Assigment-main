@@ -10,6 +10,34 @@
 
 namespace control {
 
+namespace {
+double xy_distance(const geometry_msgs::msg::Point &a,
+                   const geometry_msgs::msg::Point &b) {
+  return std::hypot(a.x - b.x, a.y - b.y);
+}
+
+double point_to_segment_distance_xy(const geometry_msgs::msg::Point &p,
+                                    const geometry_msgs::msg::Point &a,
+                                    const geometry_msgs::msg::Point &b) {
+  const double abx = b.x - a.x;
+  const double aby = b.y - a.y;
+  const double apx = p.x - a.x;
+  const double apy = p.y - a.y;
+
+  const double ab_len_sq = abx * abx + aby * aby;
+  if (ab_len_sq < 1e-9) {
+    return xy_distance(p, a);
+  }
+
+  const double t = std::clamp((apx * abx + apy * aby) / ab_len_sq, 0.0, 1.0);
+  geometry_msgs::msg::Point projection;
+  projection.x = a.x + t * abx;
+  projection.y = a.y + t * aby;
+  projection.z = p.z;
+  return xy_distance(p, projection);
+}
+}  // namespace
+
 MissionFsmNode::MissionFsmNode()
     : Node("mission_fsm_node"), current_state_(MissionState::INIT),
       pose_received_(false), mission_start_signal_received_(false),
@@ -2217,7 +2245,7 @@ void MissionFsmNode::simplify_checkpoint_graph() {
 bool MissionFsmNode::is_potential_valid_global(const geometry_msgs::msg::Point &candidate) const {
   for (const auto &entry : graph_nodes_) {
     // "Within node_distance" must include points exactly on the threshold.
-    if (calculate_distance(entry.second.position, candidate) <= nodes_distance_) {
+    if (xy_distance(entry.second.position, candidate) <= nodes_distance_) {
       return false;
     }
   }
@@ -2235,7 +2263,7 @@ bool MissionFsmNode::is_potential_valid_global(const geometry_msgs::msg::Point &
     }
     const auto &from = graph_nodes_.at(edge.first).position;
     const auto &to = graph_nodes_.at(edge.second).position;
-    if (point_to_segment_distance(candidate, from, to) <= nodes_distance_) {
+    if (point_to_segment_distance_xy(candidate, from, to) <= nodes_distance_) {
       return false;
     }
   }
@@ -2248,12 +2276,28 @@ void MissionFsmNode::prune_potentials_within_node_distance_recursive() {
     return;
   }
 
-  // Snapshot all current node positions once, then filter every potential
-  // against every node using the requested "point vs point" rule.
+  // Snapshot current nodes and edges once, then filter every potential using
+  // strict XY rules against both node points and full graph edges.
   std::vector<geometry_msgs::msg::Point> node_positions;
   node_positions.reserve(graph_nodes_.size());
   for (const auto &entry : graph_nodes_) {
     node_positions.push_back(entry.second.position);
+  }
+
+  std::vector<std::pair<geometry_msgs::msg::Point, geometry_msgs::msg::Point>> edge_segments;
+  std::set<std::pair<int, int>> unique_edges;
+  for (const auto &entry : graph_nodes_) {
+    for (const int neigh : entry.second.edges) {
+      unique_edges.insert({std::min(entry.first, neigh), std::max(entry.first, neigh)});
+    }
+  }
+  edge_segments.reserve(unique_edges.size());
+  for (const auto &edge : unique_edges) {
+    if (graph_nodes_.count(edge.first) == 0 || graph_nodes_.count(edge.second) == 0) {
+      continue;
+    }
+    edge_segments.push_back({graph_nodes_.at(edge.first).position,
+                             graph_nodes_.at(edge.second).position});
   }
 
   for (auto &anchor_entry : graph_nodes_) {
@@ -2261,8 +2305,16 @@ void MissionFsmNode::prune_potentials_within_node_distance_recursive() {
     potentials.erase(std::remove_if(potentials.begin(), potentials.end(),
                                     [&](const PotentialNode &potential) {
                                       for (const auto &node_position : node_positions) {
-                                        if (calculate_distance(potential.position, node_position) <
+                                        if (xy_distance(potential.position, node_position) <=
                                             nodes_distance_) {
+                                          return true;
+                                        }
+                                      }
+
+                                      for (const auto &edge : edge_segments) {
+                                        if (point_to_segment_distance_xy(
+                                                potential.position, edge.first,
+                                                edge.second) <= nodes_distance_) {
                                           return true;
                                         }
                                       }
