@@ -157,7 +157,7 @@ def generate_launch_description():
             # Takeoff altitude (metres above start position)
             {'takeoff_altitude': LaunchConfiguration('takeoff_altitude')},
             {'z_retry_max_attempts': 5},
-            {'z_retry_step': 1.0},
+            {'z_retry_step': 2.0},
         ],
     )
 
@@ -338,8 +338,8 @@ def generate_launch_description():
             # Safety
             {'exploration_inflation_radius': 0.6},  # Goal selection only — planner's robot_radius handles path safety
             {'cave_entrance_x': -320.0},      # Actual cave entrance X coordinate
-            {'min_z': -50.0},                   # Minimum navigable altitude (m)
-            {'max_z': 50.0},                  # Maximum navigable altitude (m)
+            {'min_z': -100.0},                   # Minimum navigable altitude (m)
+            {'max_z': 100.0},                  # Maximum navigable altitude (m)
             {'failed_region_merge_radius': 3.0},
             {'failed_region_base_reject_radius': 2.0},
             {'failed_region_reject_radius_gain': 0.7},
