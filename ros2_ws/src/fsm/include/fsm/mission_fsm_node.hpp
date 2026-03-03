@@ -94,6 +94,7 @@ private:
       const geometry_msgs::msg::PoseStamped::SharedPtr msg);
   void start_mission_callback(const std_msgs::msg::Empty::SharedPtr msg);
   void depth_points_callback(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
+  void planner_path_callback(const nav_msgs::msg::Path::SharedPtr msg);
   void timer_callback();
   void request_exploration_goal();
 
@@ -159,6 +160,8 @@ private:
   void mark_potential_node_unreachable_near(const geometry_msgs::msg::Point &pos);
   void set_single_edge_priority_target(int target_node_id);
   void clear_single_edge_priority_target();
+  bool waypoint_appears_unreachable(const geometry_msgs::msg::Point &waypoint) const;
+  bool monitor_macroplanning_rrt_waypoints();
 
   struct PotentialNode {
     geometry_msgs::msg::Point position;
@@ -184,6 +187,7 @@ private:
       exploration_map_ready_sub_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr
       depth_points_sub_;
+  rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr planner_path_sub_;
 
   // --- Service Clients ---
   rclcpp::Client<exploring::srv::GetExplorationGoal>::SharedPtr
@@ -289,6 +293,8 @@ private:
   rclcpp::Time latest_seen_point_stamp_;
   double seen_point_timeout_s_ = 1.0;
   std::vector<geometry_msgs::msg::Point> recent_obstacle_points_;
+  std::deque<geometry_msgs::msg::Point> active_rrt_waypoints_;
+  double waypoint_obstacle_clearance_ = 1.2;
   GoalSource active_goal_source_ = GoalSource::EXPLORER;
   int active_goal_anchor_node_id_ = -1;
   bool reset_explorer_filters_on_next_goal_ = false;
