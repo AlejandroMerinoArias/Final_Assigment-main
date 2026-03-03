@@ -2925,14 +2925,18 @@ void MissionFsmNode::update_mode_decision() {
     return;
   }
 
-  set_single_edge_priority_target(target_leaf);
-
   if (path.size() <= 2) {
+    set_single_edge_priority_target(target_leaf);
     travel_mode_ = false;
     travel_path_.clear();
     resume_explorer_mode_after_travel();
     return;
   }
+
+  // Keep priority reward disabled while we are still transiting through
+  // intermediate checkpoints. It must be activated only once we reach the
+  // predecessor node of the selected single-edge target.
+  clear_single_edge_priority_target();
 
   travel_mode_ = true;
   travel_path_.clear();
