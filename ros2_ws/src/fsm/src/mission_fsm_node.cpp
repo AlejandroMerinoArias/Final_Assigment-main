@@ -841,6 +841,12 @@ void MissionFsmNode::update_state() {
               calculate_distance(current_pose_.position,
                                  graph_nodes_.at(reached_node_id).position) <=
                   GOAL_REACHED_THRESHOLD) {
+            // Anchor graph state to the reached travel checkpoint immediately.
+            // This avoids mode-decision drift when runtime node-containment
+            // checks lag or are stricter than GOAL_REACHED_THRESHOLD.
+            previous_node_id_ = current_node_id_;
+            current_node_id_ = reached_node_id;
+            last_visited_node_id_ = reached_node_id;
             clear_node_relocation_state(reached_node_id);
             travel_path_.pop_front();
           }
