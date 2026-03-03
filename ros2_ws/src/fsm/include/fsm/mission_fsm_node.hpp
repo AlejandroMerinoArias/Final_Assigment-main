@@ -280,7 +280,7 @@ private:
   double node_radius_ = 15.0;
   bool macroplanning_enabled_ = true;
   double max_potential_node_range_ = 60.0;
-  double potential_angle_threshold_deg_ = 30.0;
+  double potential_angle_threshold_deg_ = 15.0;
   geometry_msgs::msg::Point latest_seen_point_;
   bool latest_seen_point_valid_ = false;
   rclcpp::Time latest_seen_point_stamp_;

@@ -156,7 +156,7 @@ def generate_launch_description():
 
             # Takeoff altitude (metres above start position)
             {'takeoff_altitude': LaunchConfiguration('takeoff_altitude')},
-            {'z_retry_max_attempts': 3},
+            {'z_retry_max_attempts': 5},
             {'z_retry_step': 1.0},
         ],
     )
@@ -235,7 +235,7 @@ def generate_launch_description():
                 # This is the PRIMARY collision avoidance parameter — it controls
                 # how close the planned flight path can get to walls/obstacles.
                 # Increase this if the drone is still colliding with walls.
-                "robot_radius": 0.7,
+                "robot_radius": 2.0,
                 # Collision check sampling resolution (meters)
                 # Smaller = safer but slower. Should be << robot_radius.
                 # Default 0.1m provides good safety/performance balance.
@@ -338,7 +338,7 @@ def generate_launch_description():
             # Safety
             {'exploration_inflation_radius': 0.6},  # Goal selection only — planner's robot_radius handles path safety
             {'cave_entrance_x': -320.0},      # Actual cave entrance X coordinate
-            {'min_z': -10.0},                   # Minimum navigable altitude (m)
+            {'min_z': -50.0},                   # Minimum navigable altitude (m)
             {'max_z': 50.0},                  # Maximum navigable altitude (m)
             {'failed_region_merge_radius': 3.0},
             {'failed_region_base_reject_radius': 2.0},
