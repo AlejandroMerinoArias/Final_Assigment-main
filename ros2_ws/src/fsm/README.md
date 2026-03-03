@@ -122,7 +122,7 @@ When `macroplanning_enabled=true`, FSM maintains a graph of checkpoint nodes inf
 flowchart TD
     A[Update checkpoint graph from current pose] --> B{Any single-edge nodes?}
     B -- No --> C{Resolvable potential nodes exist?}
-    C -- Yes --> D[Select nearest viable potential anchor\n(path metric over graph)]
+    C -- Yes --> D[Select nearest viable potential anchor<br/>path metric over graph]
     D --> E{Already at anchor?}
     E -- No --> F[Enable travel_mode + shortest path to anchor]
     E -- Yes --> G[Request/activate potential objective]
