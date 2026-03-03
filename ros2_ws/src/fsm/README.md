@@ -1,106 +1,171 @@
 # FSM Package (`fsm`)
 
-This package contains the **mission finite-state machine** (`mission_fsm_node`) that coordinates takeoff, cave-entry navigation, exploration-goal dispatching, recovery logic, and return/landing.
+The `fsm` package contains the mission orchestrator node, `mission_fsm_node`, that coordinates the drone lifecycle from startup to landing.
 
-## What the node does today
+At runtime, the node combines:
 
-The FSM runs an 8-state mission loop:
-
-1. `INIT` – wait for odometry (`/current_state_est`) and `/mission/start`.
-2. `TAKEOFF` – publish a waypoint at current XY + configured takeoff altitude.
-3. `GOTO_ENTRANCE` – publish waypoint to the fixed cave entrance (`[-320, 10, 18]`).
-4. `EXPLORE` – request goals from `/exploration/get_goal`, dispatch to planner, monitor progress.
-5. `REFINE_GOAL` – retry same XY with alternate Z values when planning/progress fails.
-6. `LANTERN_FOUND` – de-duplicate and count lantern detections, then resume exploration.
-7. `RETURN` – send planner goal back to start XY at takeoff altitude.
-8. `LAND` – publish direct trajectory to start position at ground level.
-
-### Mission completion criterion
-
-`TARGET_LANTERN_COUNT` is currently hardcoded to **1** lantern, so the FSM leaves `EXPLORE` once one unique lantern is accepted.
+- an 8-state finite-state machine,
+- asynchronous exploration-goal service requests,
+- planner feedback handling,
+- multi-layer recovery (stuck/timeout/Z-retry/frozen-watchdog), and
+- a macroplanning checkpoint graph for robust cave traversal.
 
 ---
 
-## Key behaviors implemented in code
+## 1) Mission state machine
 
-### 1) Exploration goals are service-driven
+```mermaid
+stateDiagram-v2
+    [*] --> INIT
+    INIT --> TAKEOFF: pose received + /mission/start
+    TAKEOFF --> GOTO_ENTRANCE: reached takeoff altitude
+    GOTO_ENTRANCE --> EXPLORE: reached cave entrance
 
-The FSM requests goals using async client calls to:
+    EXPLORE --> REFINE_GOAL: PLAN_FAILED / timeout / low progress
+    REFINE_GOAL --> EXPLORE: refined goal reached
+    REFINE_GOAL --> EXPLORE: all retries exhausted -> blacklist
 
-- `/exploration/get_goal` (`exploring/srv/GetExplorationGoal`)
+    EXPLORE --> LANTERN_FOUND: new de-duplicated lantern
+    LANTERN_FOUND --> EXPLORE: immediate resume
 
-It tracks `goal_request_pending_`, request epochs, request timeout, consecutive failures, and time since last successful goal to avoid duplicate/stale requests and log stuck goal-selection conditions.
+    EXPLORE --> RETURN: mission-complete return corridor reaches entrance
+    RETURN --> LAND: reached start XY at return altitude
+    LAND --> [*]: landed near start position
+```
 
-### 2) Planner routing by parameter
+### State semantics
 
-`planner_type` selects the goal topic:
+1. **`INIT`**: Waits for both `/current_state_est` and `/mission/start`.
+2. **`TAKEOFF`**: Sends a waypoint path to current XY and `current_z + takeoff_altitude`.
+3. **`GOTO_ENTRANCE`**: Sends a waypoint path to the fixed entrance `[-320, 10, 18]`.
+4. **`EXPLORE`**: Main autonomous phase (service-driven goals + macroplanning logic).
+5. **`REFINE_GOAL`**: Retries same XY with alternate Z levels.
+6. **`LANTERN_FOUND`**: Triggered by a new (de-duplicated) lantern detection; immediately returns to `EXPLORE`.
+7. **`RETURN`**: Uses planner to fly to start XY at takeoff altitude.
+8. **`LAND`**: Publishes direct trajectory to initial start pose.
 
-- `RRT` → `/planner/goal`
-- `A_star` → `/planner_a/goal`
-
-Planner feedback is consumed from `/planner/status`.
-
-### 3) Z-refinement recovery is parameterized
-
-On planner failure or low-progress/stuck cases, FSM enters `REFINE_GOAL` and builds a retry altitude list around the strategic goal Z using:
-
-- `z_retry_max_attempts`
-- `z_retry_step`
-
-Pattern is center, then alternating lower/higher levels until attempts are exhausted.
-
-### 4) Goal blacklisting after exhausted retries
-
-If all refinement attempts fail, FSM publishes `geometry_msgs/PointStamped` to:
-
-- `/exploration/blacklist_goal`
-
-so exploration manager can reject that frontier in future requests.
-
-### 5) Macroplanning graph + travel mode
-
-When `macroplanning_enabled` is true, FSM maintains checkpoint graph nodes/edges, potential nodes from depth points, and travel-mode handoffs. It also publishes:
-
-- `/fsm/checkpoint_markers` (graph visualization)
-- `/exploration/priority_target` (single-edge priority cue)
-- `/exploration/punishment_target` (one-shot predecessor repulsion cue)
-
-### 6) Frozen watchdog fallback
-
-If the drone stays within `freeze_reset_distance_threshold` longer than `freeze_timeout_s` while in `EXPLORE`/`REFINE_GOAL`, FSM triggers recovery:
-
-- cancels current motion,
-- resets exploration-side transient state,
-- re-enters `EXPLORE` while preserving macroplanning graph structure.
+> Mission completion is currently configured as `TARGET_LANTERN_COUNT = 1`.
 
 ---
 
-## ROS interfaces
+## 2) Command and planner routing
+
+### Exploration goal ingress
+
+- Goals are requested from `/exploration/get_goal` (`exploring/srv/GetExplorationGoal`).
+- The node enforces request latching and stale-response protection using:
+  - `goal_request_pending_`,
+  - `goal_request_timeout_s`,
+  - `explorer_request_epoch_`,
+  - `explorer_mode_suspended_for_travel_`.
+
+### Planner topic selection
+
+- `planner_type == "RRT"` → `/planner/goal`
+- `planner_type == "A_star"` → `/planner_a/goal`
+- Planner status feedback is consumed from `/planner/status`.
+
+Macroplanning travel/potential goals are always sent via the RRT goal topic (`/planner/goal`) so travel-mode and waypoint-monitor logic remain consistent.
+
+---
+
+## 3) Recovery and robustness behaviors
+
+### Z-retry refinement (`REFINE_GOAL`)
+
+On `PLAN_FAILED`, hard timeout, or stuck/low-progress detection, the node enters `REFINE_GOAL` and retries altitudes generated around the current goal Z:
+
+- parameters: `z_retry_max_attempts`, `z_retry_step`,
+- pattern: center, then alternating lower/higher heights,
+- on exhaustion: goal is blacklisted through `/exploration/blacklist_goal`.
+
+### Exploration goal-selection watchdog
+
+While in `EXPLORE`, FSM tracks:
+
+- consecutive failed goal requests,
+- elapsed time since last successful activation.
+
+If thresholds are exceeded (`explore_goal_selection_timeout`, `explore_goal_selection_max_failures`), the node warns and keeps trying.
+
+### Frozen watchdog fallback
+
+When in `EXPLORE`/`REFINE_GOAL`, if motion stays within `freeze_reset_distance_threshold` for `freeze_timeout_s`, FSM:
+
+- cancels current execution,
+- resets transient exploration/travel objective state,
+- preserves macroplanning graph structure,
+- restarts exploration ownership cleanly.
+
+### Waypoint-level macroplanning guard (RRT)
+
+For travel/potential objectives, the node caches planner waypoints (`waypoints`) and checks nearby sampled obstacle points. If the next waypoint appears blocked (`waypoint_obstacle_clearance`), it cancels and attempts controlled reactivation/fallback.
+
+---
+
+## 4) Macroplanning checkpoint graph
+
+When `macroplanning_enabled=true`, FSM maintains a graph of checkpoint nodes inferred from flight progress and depth cloud observations.
+
+### Graph concepts
+
+- **Checkpoint nodes** (`graph_nodes_`): center position, adjacency edges, visit count.
+- **Potentials**: candidate exploration directions anchored to nodes.
+- **Travel mode**: deterministic traversal along shortest-path node sequences.
+- **Single-edge policy**: special handling for corridor/leaf structures with:
+  - `/exploration/priority_target` (encourage exploration direction),
+  - `/exploration/punishment_target` (discourage immediate backtracking).
+
+### High-level decision flow
+
+```mermaid
+flowchart TD
+    A[Update checkpoint graph from current pose] --> B{Any single-edge nodes?}
+    B -- No --> C{Resolvable potential nodes exist?}
+    C -- Yes --> D[Select nearest viable potential anchor\n(path metric over graph)]
+    D --> E{Already at anchor?}
+    E -- No --> F[Enable travel_mode + shortest path to anchor]
+    E -- Yes --> G[Request/activate potential objective]
+    C -- No --> H[Reset graph to entrance bootstrap]
+
+    B -- Yes --> I[Pick directionally aligned target leaf]
+    I --> J{Need intermediate transit nodes?}
+    J -- Yes --> K[Travel through intermediate checkpoints]
+    J -- No --> L[Publish priority target and stay explorer-led]
+```
+
+### Mission-complete return corridor
+
+After enough lanterns are found, the node first attempts to return to cave entrance through the checkpoint graph (`start_return_to_entrance_via_travel`). If corridor synthesis fails, it falls back directly to `RETURN`.
+
+---
+
+## 5) ROS interfaces
 
 ### Subscriptions
 
-- `/current_state_est` (`nav_msgs/Odometry`)
-- `/detected_lanterns` (`geometry_msgs/PoseStamped`)
-- `/planner/status` (`std_msgs/String`)
-- `/mission/start` (`std_msgs/Empty`)
-- `/exploration/map_ready` (`std_msgs/Bool`)
-- `/camera/depth/points_world` (`sensor_msgs/PointCloud2`)
-- `waypoints` (`nav_msgs/Path`) – planner path monitor for travel/potential goals
+- `/current_state_est` (`nav_msgs/msg/Odometry`)
+- `/detected_lanterns` (`geometry_msgs/msg/PoseStamped`)
+- `/planner/status` (`std_msgs/msg/String`)
+- `/mission/start` (`std_msgs/msg/Empty`)
+- `/exploration/map_ready` (`std_msgs/msg/Bool`)
+- `/camera/depth/points_world` (`sensor_msgs/msg/PointCloud2`)
+- `waypoints` (`nav_msgs/msg/Path`) — planner path monitor for travel/potential execution
 
 ### Publications
 
-- `/command/trajectory` (`trajectory_msgs/MultiDOFJointTrajectory`)
-- `waypoints` (`nav_msgs/Path`) – waypoint-path commands (takeoff/entrance)
-- `/fsm/cancel` (`std_msgs/Empty`)
-- `/fsm/state` (`std_msgs/String`)
-- `/planner/goal` (`geometry_msgs/PoseStamped`)
-- `/planner_a/goal` (`geometry_msgs/PoseStamped`)
-- `/enable_mapping` (`std_msgs/Bool`)
-- `/exploration/blacklist_goal` (`geometry_msgs/PointStamped`)
-- `/exploration/priority_target` (`geometry_msgs/PointStamped`)
-- `/exploration/punishment_target` (`geometry_msgs/PointStamped`)
-- `/fsm/drone_marker` (`visualization_msgs/Marker`)
-- `/fsm/checkpoint_markers` (`visualization_msgs/MarkerArray`)
+- `/command/trajectory` (`trajectory_msgs/msg/MultiDOFJointTrajectory`)
+- `waypoints` (`nav_msgs/msg/Path`) — direct waypoint-path commands (takeoff/entrance)
+- `/fsm/cancel` (`std_msgs/msg/Empty`)
+- `/fsm/state` (`std_msgs/msg/String`)
+- `/planner/goal` (`geometry_msgs/msg/PoseStamped`)
+- `/planner_a/goal` (`geometry_msgs/msg/PoseStamped`)
+- `/enable_mapping` (`std_msgs/msg/Bool`)
+- `/exploration/blacklist_goal` (`geometry_msgs/msg/PointStamped`)
+- `/exploration/priority_target` (`geometry_msgs/msg/PointStamped`)
+- `/exploration/punishment_target` (`geometry_msgs/msg/PointStamped`)
+- `/fsm/drone_marker` (`visualization_msgs/msg/Marker`)
+- `/fsm/checkpoint_markers` (`visualization_msgs/msg/MarkerArray`)
 
 ### Service clients
 
@@ -108,30 +173,42 @@ If the drone stays within `freeze_reset_distance_threshold` longer than `freeze_
 
 ---
 
-## Important parameters
+## 6) Parameters exposed by `mission_fsm_node`
 
-### Declared by `mission_fsm_node`
+Core mission and exploration:
 
-- `planner_type` (node default: `A_star`)
-- `takeoff_altitude` (node default: `2.0`)
-- `lantern_dedup_threshold` (default `2.5`)
-- `min_exploration_goal_distance` (default `2.0`)
-- `explore_goal_selection_timeout` (default `60.0`)
-- `explore_goal_selection_max_failures` (default `50`)
-- `replan_interval_s` (default `3.0`)
-- `z_retry_max_attempts` (default `3`)
-- `z_retry_step` (default `1.0`)
-- `macroplanning_enabled` (default `true`)
-- `nodes_distance`, `node_radius`, `max_potential_node_range`
-- `potential_node_backoff_distance`, `potential_angle_threshold_deg`
-- `seen_point_timeout_s`, `goal_request_timeout_s`, `force_explorer_timeout_s`
+- `planner_type` (`A_star` default in node, overridden in mission launch)
+- `takeoff_altitude`
+- `lantern_dedup_threshold`
+- `min_exploration_goal_distance`
+- `replan_interval_s`
+
+Goal-selection and request watchdog:
+
+- `explore_goal_selection_timeout`
+- `explore_goal_selection_max_failures`
+- `goal_request_timeout_s`
+
+Refinement and stuck handling:
+
+- `z_retry_max_attempts`
+- `z_retry_step`
+- `freeze_reset_distance_threshold`
+- `freeze_timeout_s`
+
+Macroplanning graph and potentials:
+
+- `macroplanning_enabled`
+- `nodes_distance`, `node_radius`
+- `max_potential_node_range`
+- `potential_node_backoff_distance`
+- `potential_angle_threshold_deg`
+- `seen_point_timeout_s`
+- `force_explorer_timeout_s`
 - `single_edge_priority_reached_radius`
 - `waypoint_obstacle_clearance`
-- `freeze_reset_distance_threshold`, `freeze_timeout_s`
 
-### Overrides used in `launch/mission.launch.py`
-
-By default, mission launch overrides several FSM params:
+### Default overrides in `launch/mission.launch.py`
 
 - `planner_type:=RRT`
 - `takeoff_altitude:=5.0`
@@ -141,22 +218,22 @@ By default, mission launch overrides several FSM params:
 
 ---
 
-## Launch
+## 7) Launch and operation
 
-Run full mission stack (FSM + planners + perception + mapping + RViz):
+Run the integrated mission stack:
 
 ```bash
 ros2 launch fsm mission.launch.py
 ```
 
-Useful overrides:
+Example overrides:
 
 ```bash
 ros2 launch fsm mission.launch.py planner_type:=A_star takeoff_altitude:=4.0
 ros2 launch fsm mission.launch.py record_bag:=true bag_filename:=mission_run
 ```
 
-Start mission trigger:
+Trigger mission start:
 
 ```bash
 ros2 topic pub --once /mission/start std_msgs/msg/Empty "{}"
