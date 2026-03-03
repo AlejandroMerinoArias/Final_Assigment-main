@@ -160,6 +160,8 @@ private:
   void mark_potential_node_unreachable_near(const geometry_msgs::msg::Point &pos);
   void set_single_edge_priority_target(int target_node_id);
   void clear_single_edge_priority_target();
+  void set_single_edge_punishment_target(int target_node_id);
+  void clear_single_edge_punishment_target();
   bool waypoint_appears_unreachable(const geometry_msgs::msg::Point &waypoint) const;
   bool monitor_macroplanning_rrt_waypoints();
 
@@ -210,6 +212,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr enable_mapping_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr blacklist_goal_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr priority_target_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr punishment_target_pub_;
   // --- Timer ---
   rclcpp::TimerBase::SharedPtr timer_;
 
@@ -308,6 +311,7 @@ private:
   std::unordered_map<int, geometry_msgs::msg::Point> node_relocation_origin_;
   std::unordered_map<int, int> node_relocation_attempts_;
   int single_edge_priority_target_node_id_ = -1;
+  int single_edge_punishment_target_node_id_ = -1;
   double single_edge_priority_reached_radius_ = 1.0;
 };
 
