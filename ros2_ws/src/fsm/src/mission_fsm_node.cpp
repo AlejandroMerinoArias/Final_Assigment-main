@@ -189,6 +189,8 @@ MissionFsmNode::MissionFsmNode()
       "/exploration/blacklist_goal", 10);
   priority_target_pub_ = this->create_publisher<geometry_msgs::msg::PointStamped>(
       "/exploration/priority_target", 10);
+  punishment_target_pub_ = this->create_publisher<geometry_msgs::msg::PointStamped>(
+      "/exploration/punishment_target", 10);
 
   // --- Timer: 10 Hz main loop ---
   timer_ =
@@ -783,13 +785,20 @@ void MissionFsmNode::update_state() {
 
       if (single_edge_priority_target_node_id_ >= 0 &&
           graph_nodes_.count(single_edge_priority_target_node_id_) > 0) {
+        const int reached_leaf_id = single_edge_priority_target_node_id_;
         const double d_target = calculate_distance(
             current_pose_.position,
-            graph_nodes_.at(single_edge_priority_target_node_id_).position);
+            graph_nodes_.at(reached_leaf_id).position);
         if (d_target <= single_edge_priority_reached_radius_) {
           RCLCPP_INFO(this->get_logger(),
                       "Reached single-edge priority node radius (%.2f m <= %.2f m).",
                       d_target, single_edge_priority_reached_radius_);
+
+          if (!graph_nodes_.at(reached_leaf_id).edges.empty()) {
+            const int predecessor_id = *graph_nodes_.at(reached_leaf_id).edges.begin();
+            set_single_edge_punishment_target(predecessor_id);
+          }
+
           clear_single_edge_priority_target();
         }
       }
@@ -2925,14 +2934,18 @@ void MissionFsmNode::update_mode_decision() {
     return;
   }
 
-  set_single_edge_priority_target(target_leaf);
-
   if (path.size() <= 2) {
+    set_single_edge_priority_target(target_leaf);
     travel_mode_ = false;
     travel_path_.clear();
     resume_explorer_mode_after_travel();
     return;
   }
+
+  // Keep priority reward disabled while we are still transiting through
+  // intermediate checkpoints. It must be activated only once we reach the
+  // predecessor node of the selected single-edge target.
+  clear_single_edge_priority_target();
 
   travel_mode_ = true;
   travel_path_.clear();
@@ -2978,6 +2991,39 @@ void MissionFsmNode::clear_single_edge_priority_target() {
   msg.point.z = std::numeric_limits<double>::quiet_NaN();
   priority_target_pub_->publish(msg);
   RCLCPP_INFO(this->get_logger(), "Cleared single-edge exploration priority target.");
+}
+
+void MissionFsmNode::set_single_edge_punishment_target(int target_node_id) {
+  if (target_node_id < 0 || graph_nodes_.count(target_node_id) == 0) {
+    return;
+  }
+
+  single_edge_punishment_target_node_id_ = target_node_id;
+  geometry_msgs::msg::PointStamped msg;
+  msg.header.stamp = this->now();
+  msg.header.frame_id = "world";
+  msg.point = graph_nodes_.at(target_node_id).position;
+  punishment_target_pub_->publish(msg);
+
+  RCLCPP_INFO(this->get_logger(),
+              "Activated single-edge return punishment toward predecessor node %d at [%.2f, %.2f, %.2f].",
+              target_node_id, msg.point.x, msg.point.y, msg.point.z);
+}
+
+void MissionFsmNode::clear_single_edge_punishment_target() {
+  if (single_edge_punishment_target_node_id_ < 0) {
+    return;
+  }
+
+  single_edge_punishment_target_node_id_ = -1;
+  geometry_msgs::msg::PointStamped msg;
+  msg.header.stamp = this->now();
+  msg.header.frame_id = "world";
+  msg.point.x = std::numeric_limits<double>::quiet_NaN();
+  msg.point.y = std::numeric_limits<double>::quiet_NaN();
+  msg.point.z = std::numeric_limits<double>::quiet_NaN();
+  punishment_target_pub_->publish(msg);
+  RCLCPP_INFO(this->get_logger(), "Cleared single-edge return punishment target.");
 }
 
 void MissionFsmNode::mark_potential_node_unreachable_near(const geometry_msgs::msg::Point &pos) {

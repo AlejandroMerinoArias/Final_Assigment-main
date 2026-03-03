@@ -145,7 +145,8 @@ When macroplanning identifies that the mission should revisit a **single-edge no
 1. **Travel phase**: travel mode is used only to go to the **predecessor node** of the selected single-edge node.
 2. **Priority exploration phase**: once at that predecessor (or already there), travel mode is released and exploration resumes, but with a strong priority signal (`/exploration/priority_target`) aimed at the single-edge node.
 3. **Automatic deactivation**: when the drone enters a 1.0 m radius around that node, the priority signal is cleared.
-4. **Continuous potential harvesting**: while in `travel` or `potential` execution mode, the FSM still records newly seen macroplanning potential nodes around the currently anchored checkpoint so potential branches are not lost during transit.
+4. **One-shot return punishment**: upon reaching that single-edge node, FSM publishes `/exploration/punishment_target` at the predecessor node so the *next* exploration goal is strongly discouraged from backtracking immediately.
+5. **Continuous potential harvesting**: while in `travel` or `potential` execution mode, the FSM still records newly seen macroplanning potential nodes around the currently anchored checkpoint so potential branches are not lost during transit.
 
 This logic is specific to single-edge-node dispatching; other travel-mode uses are unchanged.
 
@@ -175,6 +176,7 @@ This logic is specific to single-edge-node dispatching; other travel-mode uses a
 | `/fsm/cancel` | `std_msgs/Empty` | Cancel signal for current goal |
 | `/exploration/blacklist_goal` | `geometry_msgs/PointStamped` | Goals to permanently blacklist |
 | `/exploration/priority_target` | `geometry_msgs/PointStamped` | High-priority macroplanning target for exploration mode |
+| `/exploration/punishment_target` | `geometry_msgs/PointStamped` | One-shot macroplanning repulsion target (discourages immediate predecessor backtracking) |
 | `/fsm/drone_marker` | `visualization_msgs/Marker` | RViz drone position marker |
 | `/enable_mapping` | `std_msgs/Bool` | Enables cloud gating when entering EXPLORE |
 
