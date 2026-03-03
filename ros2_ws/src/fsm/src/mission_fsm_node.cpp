@@ -3398,6 +3398,27 @@ void MissionFsmNode::update_mode_decision() {
        (graph_nodes_[current_node_id_].edges.size() +
             (graph_nodes_[current_node_id_].is_dead_end ? 1 : 0) ==
         1));
+
+  // Rule M (single-edge revisit -> potential resolution):
+  // If we are currently in a single-edge node for at least the second visit,
+  // force potential resolution from that node instead of directional
+  // single-edge traversal.
+  if (in_node_with_one_edge &&
+      graph_nodes_[current_node_id_].visit_count >= 2 &&
+      node_has_resolvable_potential(current_node_id_)) {
+    if (goal_active_ && active_goal_source_ == GoalSource::TRAVEL) {
+      cancel_pub_->publish(std_msgs::msg::Empty());
+      goal_active_ = false;
+    }
+    potential_resolution_node_id_ = current_node_id_;
+    single_edge_travel_target_node_id_ = -1;
+    clear_single_edge_priority_target();
+    travel_mode_ = false;
+    travel_path_.clear();
+    resume_explorer_mode_after_travel();
+    return;
+  }
+
   const bool outside_node = (current_node_id_ < 0);
   const bool last_has_one_edge =
       (last_visited_node_id_ != entrance_node_id_ &&
