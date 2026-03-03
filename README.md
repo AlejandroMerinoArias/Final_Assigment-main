@@ -70,6 +70,17 @@ ros2 launch simulation simulation.launch.py
     source install/setup.bash
     ros2 launch fsm mission.launch.py
     ```
+
+    `mission.launch.py` brings up the integrated stack used for missions: FSM, exploration manager, selected global planner (`RRT` by default), trajectory generation, perception pipeline, mapping pipeline, and RViz.
+
+    Common overrides:
+    ```bash
+    # Use A* planner instead of RRT
+    ros2 launch fsm mission.launch.py planner_type:=A_star
+
+    # Adjust relative takeoff height (meters above start pose)
+    ros2 launch fsm mission.launch.py takeoff_altitude:=4.0
+    ```
     
     *Optional:* To automatically record a ROS bag of the flight (topics like trajectory, goals, and state), use:
     ```bash
@@ -85,6 +96,8 @@ ros2 launch simulation simulation.launch.py
     source /opt/ros/jazzy/setup.bash
     ros2 topic pub --once /mission/start std_msgs/msg/Empty "{}"
     ```
+
+    Current FSM stop condition is configured in code to end exploration after **1 unique lantern** is confirmed, then it returns and lands.
 
 ### Building with Docker
 
@@ -129,6 +142,8 @@ The workspace is split logically across multiple packages.
 *   `exploring` (Frontier exploration logic)
 *   `trajectory_generation` (Trajectory tracking & smoothing)
 *   *(Provided packages: `simulation`, `unity_sim`, `controller_pkg`, `mav_msgs`, `mav_planning_msgs`)*
+
+> For FSM behavior details (states, recovery logic, interfaces, and runtime parameters), see `ros2_ws/src/fsm/README.md`.
 
 #### Actual Folder Structure
 
