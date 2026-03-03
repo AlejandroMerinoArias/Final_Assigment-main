@@ -2799,33 +2799,71 @@ void MissionFsmNode::update_mode_decision() {
       return;
     }
 
-    int closest_potential_node = -1;
-    double best_dist = std::numeric_limits<double>::max();
-    std::vector<int> best_path;
-    for (const auto &entry : graph_nodes_) {
-      if (!node_has_resolvable_potential(entry.first)) {
-        continue;
+    auto compute_path_metric = [this](const std::vector<int> &path) {
+      if (path.empty()) {
+        return std::numeric_limits<double>::max();
       }
+      double metric = 0.0;
+      for (size_t i = 1; i < path.size(); ++i) {
+        if (graph_nodes_.count(path[i - 1]) == 0 || graph_nodes_.count(path[i]) == 0) {
+          return std::numeric_limits<double>::max();
+        }
+        metric += calculate_distance(graph_nodes_.at(path[i - 1]).position,
+                                     graph_nodes_.at(path[i]).position);
+      }
+      return metric;
+    };
 
-      std::vector<int> candidate_path;
-      if (entry.first == start_node) {
-        candidate_path = {start_node};
+    // Keep an already-selected target latched while it's still valid.
+    // This prevents oscillations where the "closest" candidate flips every
+    // timer tick as the drone moves between checkpoints.
+    int selected_potential_node = -1;
+    std::vector<int> selected_path;
+
+    if (potential_resolution_node_id_ >= 0 &&
+        graph_nodes_.count(potential_resolution_node_id_) > 0 &&
+        node_has_resolvable_potential(potential_resolution_node_id_)) {
+      if (potential_resolution_node_id_ == start_node) {
+        selected_potential_node = start_node;
+        selected_path = {start_node};
       } else {
-        candidate_path = compute_shortest_path_nodes(start_node, entry.first);
-      }
-      if (candidate_path.empty()) {
-        continue;
-      }
-
-      const double d = calculate_distance(current_pose_.position, entry.second.position);
-      if (d < best_dist) {
-        best_dist = d;
-        closest_potential_node = entry.first;
-        best_path = std::move(candidate_path);
+        auto candidate_path =
+            compute_shortest_path_nodes(start_node, potential_resolution_node_id_);
+        if (!candidate_path.empty()) {
+          selected_potential_node = potential_resolution_node_id_;
+          selected_path = std::move(candidate_path);
+        }
       }
     }
 
-    if (closest_potential_node < 0) {
+    if (selected_potential_node < 0) {
+      double best_metric = std::numeric_limits<double>::max();
+
+      for (const auto &entry : graph_nodes_) {
+        if (!node_has_resolvable_potential(entry.first)) {
+          continue;
+        }
+
+        std::vector<int> candidate_path;
+        if (entry.first == start_node) {
+          candidate_path = {start_node};
+        } else {
+          candidate_path = compute_shortest_path_nodes(start_node, entry.first);
+        }
+        if (candidate_path.empty()) {
+          continue;
+        }
+
+        const double metric = compute_path_metric(candidate_path);
+        if (metric < best_metric) {
+          best_metric = metric;
+          selected_potential_node = entry.first;
+          selected_path = std::move(candidate_path);
+        }
+      }
+    }
+
+    if (selected_potential_node < 0) {
       reset_graph_to_entrance();
       travel_mode_ = false;
       potential_resolution_node_id_ = -1;
@@ -2836,13 +2874,16 @@ void MissionFsmNode::update_mode_decision() {
       return;
     }
 
-    potential_resolution_node_id_ = closest_potential_node;
-    if (start_node != closest_potential_node) {
-      if (best_path.size() > 1) {
+    potential_resolution_node_id_ = selected_potential_node;
+    if (start_node != selected_potential_node) {
+      if (selected_path.size() > 1) {
         travel_mode_ = true;
-        travel_path_.clear();
-        for (size_t i = 1; i < best_path.size(); ++i) {
-          travel_path_.push_back(best_path[i]);
+        std::deque<int> next_travel_path;
+        for (size_t i = 1; i < selected_path.size(); ++i) {
+          next_travel_path.push_back(selected_path[i]);
+        }
+        if (next_travel_path != travel_path_) {
+          travel_path_ = std::move(next_travel_path);
         }
         if (!was_travel_mode) {
           suspend_explorer_mode_for_travel();
