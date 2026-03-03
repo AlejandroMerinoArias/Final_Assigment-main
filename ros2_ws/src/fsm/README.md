@@ -148,6 +148,8 @@ When macroplanning identifies that the mission should revisit a **single-edge no
 4. **One-shot return punishment**: upon reaching that single-edge node, FSM publishes `/exploration/punishment_target` at the predecessor node so the *next* exploration goal is strongly discouraged from backtracking immediately.
 5. **Continuous potential harvesting**: while in `travel` or `potential` execution mode, the FSM still records newly seen macroplanning potential nodes around the currently anchored checkpoint so potential branches are not lost during transit.
 
+6. **Visit-gated potential growth**: once a checkpoint node has been visited more than 3 times, that node is no longer allowed to register additional potential nodes (existing potentials are still consumable).
+
 This logic is specific to single-edge-node dispatching; other travel-mode uses are unchanged.
 
 ---

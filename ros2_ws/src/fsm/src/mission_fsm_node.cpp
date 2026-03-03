@@ -2149,6 +2149,7 @@ int MissionFsmNode::create_checkpoint_node(const geometry_msgs::msg::Point &pos,
   node.position = pos;
   node.is_dead_end = is_entrance;
   node.is_provisional = is_provisional;
+  node.visit_count = 1;
   graph_nodes_[node_id] = node;
 
   // Event-based cleanup: whenever a new node is generated, re-validate all
@@ -2690,6 +2691,13 @@ void MissionFsmNode::register_potential_node_for_anchor(const geometry_msgs::msg
   }
 
   auto &anchor = graph_nodes_[anchor_id];
+  if (anchor.visit_count > 3) {
+    RCLCPP_DEBUG(this->get_logger(),
+                 "Skipping potential registration for node %d: visit_count=%d (>3).",
+                 anchor_id, anchor.visit_count);
+    return;
+  }
+
   if (!is_potential_valid_global(candidate)) {
     return;
   }
@@ -2923,6 +2931,10 @@ void MissionFsmNode::update_checkpoint_graph() {
       }
     } else if (entered_node) {
       suppress_rule_l_ = false;
+    }
+
+    if (entered_node && graph_nodes_.count(current_node_id_) > 0) {
+      graph_nodes_[current_node_id_].visit_count += 1;
     }
 
     if (entered_node || last_visited_node_id_ < 0) {
