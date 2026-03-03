@@ -2389,18 +2389,21 @@ void MissionFsmNode::clear_node_relocation_state(int node_id) {
 }
 
 void MissionFsmNode::register_potential_node_for_anchor(const geometry_msgs::msg::Point &candidate) {
-  if (current_state_ != MissionState::EXPLORE || travel_mode_ ||
-      potential_resolution_node_id_ >= 0 ||
-      active_goal_source_ == GoalSource::TRAVEL ||
-      active_goal_source_ == GoalSource::POTENTIAL) {
+  if (current_state_ != MissionState::EXPLORE) {
     return;
   }
 
-  if (last_visited_node_id_ < 0 || graph_nodes_.count(last_visited_node_id_) == 0) {
+  const int anchor_id =
+      (current_node_id_ >= 0 && graph_nodes_.count(current_node_id_) > 0)
+          ? current_node_id_
+          : last_visited_node_id_;
+  // Keep harvesting potential nodes while traveling or resolving existing
+  // potentials so the graph can keep expanding branch hypotheses online.
+  if (anchor_id < 0 || graph_nodes_.count(anchor_id) == 0) {
     return;
   }
 
-  auto &anchor = graph_nodes_[last_visited_node_id_];
+  auto &anchor = graph_nodes_[anchor_id];
   if (!is_potential_valid_global(candidate)) {
     return;
   }

@@ -145,6 +145,7 @@ When macroplanning identifies that the mission should revisit a **single-edge no
 1. **Travel phase**: travel mode is used only to go to the **predecessor node** of the selected single-edge node.
 2. **Priority exploration phase**: once at that predecessor (or already there), travel mode is released and exploration resumes, but with a strong priority signal (`/exploration/priority_target`) aimed at the single-edge node.
 3. **Automatic deactivation**: when the drone enters a 1.0 m radius around that node, the priority signal is cleared.
+4. **Continuous potential harvesting**: while in `travel` or `potential` execution mode, the FSM still records newly seen macroplanning potential nodes around the currently anchored checkpoint so potential branches are not lost during transit.
 
 This logic is specific to single-edge-node dispatching; other travel-mode uses are unchanged.
 
