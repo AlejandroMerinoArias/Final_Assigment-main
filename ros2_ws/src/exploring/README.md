@@ -96,6 +96,8 @@ Where:
 
 ### 5. Candidate Filtering
 
+If `/exploration/priority_target` is set, utilities are strongly amplified near that point. If `/exploration/punishment_target` is set, utilities are reduced with the same distance-decay structure (inverse factor); this punishment is consumed after the next successful goal selection.
+
 Each candidate passes through four sequential filters before scoring:
 
 | Filter | Criterion | Dynamic in Stuck Mode |
@@ -160,6 +162,7 @@ All constraints have **hard lower bounds** to maintain absolute minimum safety. 
 | `/octomap_binary` | `octomap_msgs/Octomap` | 3D occupancy map (latched) |
 | `/exploration/blacklist_goal` | `geometry_msgs/PointStamped` | Goals permanently blacklisted by FSM |
 | `/exploration/priority_target` | `geometry_msgs/PointStamped` | Optional high-priority target injected by FSM macroplanning |
+| `/exploration/punishment_target` | `geometry_msgs/PointStamped` | Optional one-shot repulsion target injected by FSM macroplanning |
 
 ### Published Topics
 
@@ -186,6 +189,7 @@ All constraints have **hard lower bounds** to maintain absolute minimum safety. 
 | `vertical_penalty_weight` | `2.0` | Time dilation factor per meter of altitude change |
 | `frontier_search_radius` | `25.0` | Base BBX search radius (m) around drone for frontier detection |
 | `min_goal_distance` | `3.0` | Minimum 3D distance (m) from drone to an accepted goal |
+| `punishment_target_penalty_gain` | `1000.0` | Gain used to downscale utility around `/exploration/punishment_target` (one-shot) |
 | `max_step_distance` | `1.0` | Maximum single-step distance (m); goal is linearly clamped if exceeded. Set to 0 to disable. |
 | `exploration_inflation_radius` | `0.7` | Obstacle clearance (m): goals closer than this to any obstacle are rejected |
 | `blacklist_radius` | `1.5` | Radius (m) within which a candidate is considered blacklisted |

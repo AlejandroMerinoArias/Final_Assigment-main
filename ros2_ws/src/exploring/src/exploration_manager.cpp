@@ -43,7 +43,8 @@ ExplorationManager::ExplorationManager()
       failed_region_reject_radius_gain_(0.7),
       failed_region_max_hits_(6),
       priority_target_reached_radius_(1.0),
-      priority_target_reward_gain_(1000.0) {
+      priority_target_reward_gain_(1000.0),
+      punishment_target_penalty_gain_(1000.0) {
   // Declare and read parameters
   this->declare_parameter("min_frontier_size", min_frontier_size_);
   this->declare_parameter("blacklist_radius", blacklist_radius_);
@@ -83,6 +84,7 @@ ExplorationManager::ExplorationManager()
   this->declare_parameter("failed_region_max_hits", failed_region_max_hits_);
   this->declare_parameter("priority_target_reached_radius", priority_target_reached_radius_);
   this->declare_parameter("priority_target_reward_gain", priority_target_reward_gain_);
+  this->declare_parameter("punishment_target_penalty_gain", punishment_target_penalty_gain_);
 
   min_frontier_size_ = this->get_parameter("min_frontier_size").as_int();
   blacklist_radius_ = this->get_parameter("blacklist_radius").as_double();
@@ -120,6 +122,7 @@ ExplorationManager::ExplorationManager()
   failed_region_max_hits_ = this->get_parameter("failed_region_max_hits").as_int();
   priority_target_reached_radius_ = this->get_parameter("priority_target_reached_radius").as_double();
   priority_target_reward_gain_ = this->get_parameter("priority_target_reward_gain").as_double();
+  punishment_target_penalty_gain_ = this->get_parameter("punishment_target_penalty_gain").as_double();
   
   // Store base thresholds for stuck-mode relaxation
   base_min_goal_distance_ = min_goal_distance_;
@@ -164,6 +167,12 @@ ExplorationManager::ExplorationManager()
       this->create_subscription<geometry_msgs::msg::PointStamped>(
           "/exploration/priority_target", 10,
           std::bind(&ExplorationManager::priority_target_callback, this,
+                    std::placeholders::_1));
+
+  punishment_target_sub_ =
+      this->create_subscription<geometry_msgs::msg::PointStamped>(
+          "/exploration/punishment_target", 10,
+          std::bind(&ExplorationManager::punishment_target_callback, this,
                     std::placeholders::_1));
 
   // Service server
@@ -272,6 +281,23 @@ void ExplorationManager::priority_target_callback(
                                       static_cast<float>(msg->point.z));
   RCLCPP_INFO(this->get_logger(),
               "Priority target set to (%.2f, %.2f, %.2f).",
+              msg->point.x, msg->point.y, msg->point.z);
+}
+
+void ExplorationManager::punishment_target_callback(
+    const geometry_msgs::msg::PointStamped::SharedPtr msg) {
+  if (!std::isfinite(msg->point.x) || !std::isfinite(msg->point.y) ||
+      !std::isfinite(msg->point.z)) {
+    punishment_target_.reset();
+    RCLCPP_INFO(this->get_logger(), "Punishment target cleared by FSM.");
+    return;
+  }
+
+  punishment_target_ = octomap::point3d(static_cast<float>(msg->point.x),
+                                        static_cast<float>(msg->point.y),
+                                        static_cast<float>(msg->point.z));
+  RCLCPP_INFO(this->get_logger(),
+              "Punishment target set to (%.2f, %.2f, %.2f).",
               msg->point.x, msg->point.y, msg->point.z);
 }
 
@@ -580,6 +606,10 @@ void ExplorationManager::handle_get_goal(
       const double d_priority = cand.position.distance(*priority_target_);
       cand.utility *= (1.0 + priority_target_reward_gain_ / (1.0 + d_priority));
     }
+    if (punishment_target_) {
+      const double d_punishment = cand.position.distance(*punishment_target_);
+      cand.utility /= (1.0 + punishment_target_penalty_gain_ / (1.0 + d_punishment));
+    }
     num_evaluated++;
 
     if (cand.utility > best_utility) {
@@ -677,6 +707,12 @@ void ExplorationManager::handle_get_goal(
   response->goal.pose.position = goal_point;
   response->goal.pose.orientation.w = 1.0;
   response->message = "Dai-Lite goal found.";
+
+  if (punishment_target_) {
+    RCLCPP_INFO(this->get_logger(),
+                "Consumed one-shot punishment target for this goal selection.");
+    punishment_target_.reset();
+  }
 
   // Update preferred heading for future branch commitment.
   // This helps avoid left-right oscillations at cave bifurcations.

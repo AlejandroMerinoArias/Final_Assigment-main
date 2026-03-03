@@ -86,6 +86,8 @@ private:
   blacklist_callback(const geometry_msgs::msg::PointStamped::SharedPtr msg);
   void priority_target_callback(
       const geometry_msgs::msg::PointStamped::SharedPtr msg);
+  void punishment_target_callback(
+      const geometry_msgs::msg::PointStamped::SharedPtr msg);
 
   // --- Service handler --------------------------------------------------
 
@@ -177,6 +179,8 @@ private:
       blacklist_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr
       priority_target_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr
+      punishment_target_sub_;
   rclcpp::Service<exploring::srv::GetExplorationGoal>::SharedPtr goal_service_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr viz_pub_;
   rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr slice_pub_;
@@ -197,6 +201,7 @@ private:
   std::vector<octomap::point3d> blacklisted_goals_;
   std::vector<FailedGoalRegion> failed_goal_regions_;
   std::optional<octomap::point3d> priority_target_;
+  std::optional<octomap::point3d> punishment_target_;
 
   // Entrance / global reference for generic "forward into cave" bias.
   // Set to the drone pose when we receive the FIRST exploration goal request.
@@ -277,6 +282,7 @@ private:
   int failed_region_max_hits_;
   double priority_target_reached_radius_;
   double priority_target_reward_gain_;
+  double punishment_target_penalty_gain_;
 };
 
 } // namespace planning
