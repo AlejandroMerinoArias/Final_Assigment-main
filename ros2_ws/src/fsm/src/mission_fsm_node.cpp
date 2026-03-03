@@ -739,6 +739,7 @@ void MissionFsmNode::on_state_exit(MissionState state) {
     current_goal_ = geometry_msgs::msg::Point();
     active_goal_source_ = GoalSource::EXPLORER;
     active_goal_anchor_node_id_ = -1;
+    single_edge_travel_target_node_id_ = -1;
     potential_objective_timer_active_ = false;
     potential_objective_anchor_node_id_ = -1;
     active_rrt_waypoints_.clear();
@@ -892,6 +893,7 @@ void MissionFsmNode::update_state() {
 
           if (travel_path_.empty()) {
             travel_mode_ = false;
+            single_edge_travel_target_node_id_ = -1;
             resume_explorer_mode_after_travel();
           }
         }
@@ -1053,6 +1055,30 @@ void MissionFsmNode::update_state() {
     // the exploration map is reported as ready by the exploration_manager.
     // This avoids spamming goal requests while the voxel map is still empty.
     if (!goal_active_ && !goal_request_pending_) {
+      if (macroplanning_enabled_ && travel_mode_ &&
+          single_edge_travel_target_node_id_ >= 0 &&
+          graph_nodes_.count(single_edge_travel_target_node_id_) > 0 &&
+          !graph_nodes_.at(single_edge_travel_target_node_id_).edges.empty()) {
+        const int predecessor_id =
+            *graph_nodes_.at(single_edge_travel_target_node_id_).edges.begin();
+        if (graph_nodes_.count(predecessor_id) > 0) {
+          const bool at_predecessor =
+              (current_node_id_ == predecessor_id) ||
+              (last_visited_node_id_ == predecessor_id) ||
+              is_inside_node(predecessor_id, current_pose_.position);
+          if (at_predecessor) {
+            RCLCPP_INFO(this->get_logger(),
+                        "Reached predecessor node %d for single-edge target %d. "
+                        "Releasing travel mode and handing off to explorer priority.",
+                        predecessor_id, single_edge_travel_target_node_id_);
+            set_single_edge_priority_target(single_edge_travel_target_node_id_);
+            travel_mode_ = false;
+            travel_path_.clear();
+            single_edge_travel_target_node_id_ = -1;
+            resume_explorer_mode_after_travel();
+          }
+        }
+      }
       if (macroplanning_enabled_ && travel_mode_ && !travel_path_.empty()) {
         const int next_node_id = travel_path_.front();
         if (graph_nodes_.count(next_node_id) > 0) {
@@ -1068,6 +1094,7 @@ void MissionFsmNode::update_state() {
             travel_path_.pop_front();
             if (travel_path_.empty()) {
               travel_mode_ = false;
+              single_edge_travel_target_node_id_ = -1;
               resume_explorer_mode_after_travel();
             }
           }
@@ -1075,6 +1102,7 @@ void MissionFsmNode::update_state() {
           travel_path_.pop_front();
           if (travel_path_.empty()) {
             travel_mode_ = false;
+            single_edge_travel_target_node_id_ = -1;
             resume_explorer_mode_after_travel();
           }
         }
@@ -3053,6 +3081,7 @@ void MissionFsmNode::update_mode_decision() {
 
   const int start_node = (current_node_id_ >= 0) ? current_node_id_ : last_visited_node_id_;
   if (start_node < 0 || graph_nodes_.count(start_node) == 0 || target_leaf < 0) {
+    single_edge_travel_target_node_id_ = -1;
     clear_single_edge_priority_target();
     travel_mode_ = false;
     travel_path_.clear();
@@ -3077,6 +3106,7 @@ void MissionFsmNode::update_mode_decision() {
           cancel_pub_->publish(std_msgs::msg::Empty());
           goal_active_ = false;
         }
+        single_edge_travel_target_node_id_ = -1;
         set_single_edge_priority_target(target_leaf);
         travel_mode_ = false;
         travel_path_.clear();
@@ -3088,6 +3118,7 @@ void MissionFsmNode::update_mode_decision() {
 
   auto path = compute_shortest_path_nodes(start_node, target_leaf);
   if (path.empty()) {
+    single_edge_travel_target_node_id_ = -1;
     clear_single_edge_priority_target();
     travel_mode_ = false;
     travel_path_.clear();
@@ -3100,6 +3131,7 @@ void MissionFsmNode::update_mode_decision() {
       cancel_pub_->publish(std_msgs::msg::Empty());
       goal_active_ = false;
     }
+    single_edge_travel_target_node_id_ = -1;
     set_single_edge_priority_target(target_leaf);
     travel_mode_ = false;
     travel_path_.clear();
@@ -3111,6 +3143,7 @@ void MissionFsmNode::update_mode_decision() {
   // intermediate checkpoints. It must be activated only once we reach the
   // predecessor node of the selected single-edge target.
   clear_single_edge_priority_target();
+  single_edge_travel_target_node_id_ = target_leaf;
 
   travel_mode_ = true;
   travel_path_.clear();
