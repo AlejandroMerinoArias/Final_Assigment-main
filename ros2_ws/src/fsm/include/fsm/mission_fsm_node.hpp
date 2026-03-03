@@ -164,6 +164,7 @@ private:
   void clear_single_edge_punishment_target();
   bool waypoint_appears_unreachable(const geometry_msgs::msg::Point &waypoint) const;
   bool monitor_macroplanning_rrt_waypoints();
+  void drop_active_potential_objective(const std::string &reason);
 
   struct PotentialNode {
     geometry_msgs::msg::Point position;
@@ -247,6 +248,7 @@ private:
   static constexpr double STUCK_DETECTION_SECONDS = 10.0; // seconds before checking for stuck behavior
   static constexpr double MIN_MOVEMENT_THRESHOLD = 0.5; // meters - minimum movement to consider progress
   static constexpr double MIN_PROGRESS_THRESHOLD = 0.5; // meters - minimum progress toward goal before warning
+  static constexpr double POTENTIAL_OBJECTIVE_TIMEOUT_SECONDS = 60.0; // seconds - cumulative timeout across replans for one potential target
   static constexpr int MAX_CONSECUTIVE_TOO_CLOSE_REJECTIONS = 3; // Accept goal after this many rejections
   int consecutive_too_close_rejections_; // Counter for consecutive "too close" rejections
 
@@ -314,6 +316,10 @@ private:
   int single_edge_priority_target_node_id_ = -1;
   int single_edge_punishment_target_node_id_ = -1;
   double single_edge_priority_reached_radius_ = 1.0;
+  bool potential_objective_timer_active_ = false;
+  rclcpp::Time potential_objective_start_time_;
+  geometry_msgs::msg::Point potential_objective_goal_;
+  int potential_objective_anchor_node_id_ = -1;
 };
 
 } // namespace control
