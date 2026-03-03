@@ -111,6 +111,11 @@ MissionFsmNode::MissionFsmNode()
   this->declare_parameter("waypoint_obstacle_clearance", waypoint_obstacle_clearance_);
   waypoint_obstacle_clearance_ =
       this->get_parameter("waypoint_obstacle_clearance").as_double();
+  this->declare_parameter("freeze_reset_distance_threshold", freeze_reset_distance_threshold_);
+  freeze_reset_distance_threshold_ =
+      this->get_parameter("freeze_reset_distance_threshold").as_double();
+  this->declare_parameter("freeze_timeout_s", freeze_timeout_s_);
+  freeze_timeout_s_ = this->get_parameter("freeze_timeout_s").as_double();
 
   // Cave entrance - Main entrance
   cave_entrance_.x = -320.0;
@@ -207,6 +212,7 @@ MissionFsmNode::MissionFsmNode()
   RCLCPP_INFO(this->get_logger(), "Mission FSM Node initialized. State: INIT");
   goal_request_sent_time_ = this->now();
   force_explorer_start_time_ = this->now();
+  freeze_stationary_since_ = this->now();
   publish_state();
 }
 
@@ -282,9 +288,102 @@ void MissionFsmNode::lantern_callback(
 
 void MissionFsmNode::timer_callback() {
   update_state();
+  monitor_frozen_progress();
   publish_state();
   publish_drone_marker();
   publish_checkpoint_markers();
+}
+
+bool MissionFsmNode::is_freeze_watch_state() const {
+  return current_state_ == MissionState::EXPLORE ||
+         current_state_ == MissionState::REFINE_GOAL;
+}
+
+void MissionFsmNode::monitor_frozen_progress() {
+  if (!pose_received_) {
+    return;
+  }
+
+  if (!is_freeze_watch_state()) {
+    freeze_reference_position_ = current_pose_.position;
+    freeze_stationary_since_ = this->now();
+    freeze_reference_initialized_ = true;
+    return;
+  }
+
+  if (!freeze_reference_initialized_) {
+    freeze_reference_position_ = current_pose_.position;
+    freeze_stationary_since_ = this->now();
+    freeze_reference_initialized_ = true;
+    return;
+  }
+
+  const double movement =
+      calculate_distance(current_pose_.position, freeze_reference_position_);
+  if (movement > freeze_reset_distance_threshold_) {
+    freeze_reference_position_ = current_pose_.position;
+    freeze_stationary_since_ = this->now();
+    return;
+  }
+
+  const double stationary_time = (this->now() - freeze_stationary_since_).seconds();
+  if (stationary_time >= freeze_timeout_s_) {
+    execute_frozen_recovery();
+  }
+}
+
+void MissionFsmNode::execute_frozen_recovery() {
+  RCLCPP_ERROR(this->get_logger(),
+               "Drone frozen watchdog triggered (stationary %.1f s within %.2f m). "
+               "Resetting mission/exploration state while preserving macroplanning graph.",
+               freeze_timeout_s_, freeze_reset_distance_threshold_);
+
+  cancel_pub_->publish(std_msgs::msg::Empty());
+
+  mission_start_signal_received_ = true;
+  goal_active_ = false;
+  goal_request_pending_ = false;
+  current_goal_ = geometry_msgs::msg::Point();
+  strategic_goal_ = geometry_msgs::msg::Point();
+  z_retry_altitudes_.clear();
+  z_retry_index_ = 0;
+  active_goal_source_ = GoalSource::EXPLORER;
+  active_goal_anchor_node_id_ = -1;
+  potential_resolution_node_id_ = -1;
+  potential_objective_timer_active_ = false;
+  potential_objective_anchor_node_id_ = -1;
+  active_rrt_waypoints_.clear();
+  travel_mode_ = false;
+  explorer_mode_suspended_for_travel_ = false;
+  travel_path_.clear();
+  suppress_rule_l_ = false;
+  force_explorer_until_new_node_ = false;
+  fallback_origin_node_id_ = -1;
+  single_edge_travel_target_node_id_ = -1;
+  clear_single_edge_priority_target();
+  clear_single_edge_punishment_target();
+  consecutive_too_close_rejections_ = 0;
+  consecutive_goal_request_failures_ = 0;
+  detected_lantern_poses_.clear();
+  lanterns_found_count_ = 0;
+  ++explorer_request_epoch_;
+
+  last_pose_at_goal_set_ = current_pose_.position;
+  goal_set_time_ = this->now();
+  last_successful_exploration_goal_time_ = this->now();
+  freeze_reference_position_ = current_pose_.position;
+  freeze_stationary_since_ = this->now();
+  freeze_reference_initialized_ = true;
+
+  if (current_state_ == MissionState::EXPLORE) {
+    RCLCPP_WARN(this->get_logger(),
+                "Reinitializing EXPLORE state after frozen fallback.");
+    on_state_exit(MissionState::EXPLORE);
+    on_state_enter(MissionState::EXPLORE);
+    publish_state();
+  } else {
+    transition_to(MissionState::EXPLORE);
+  }
 }
 
 void MissionFsmNode::planner_status_callback(

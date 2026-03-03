@@ -113,6 +113,9 @@ private:
   void publish_state();
   void publish_drone_marker();
   void publish_checkpoint_markers();
+  void monitor_frozen_progress();
+  bool is_freeze_watch_state() const;
+  void execute_frozen_recovery();
   /// Re-send the current active goal to the planner so it recomputes the path
   /// from the drone's current position (mid-flight replanning).
   void replan_current_goal();
@@ -321,6 +324,13 @@ private:
   rclcpp::Time potential_objective_start_time_;
   geometry_msgs::msg::Point potential_objective_goal_;
   int potential_objective_anchor_node_id_ = -1;
+
+  // --- Frozen watchdog fallback ---
+  geometry_msgs::msg::Point freeze_reference_position_;
+  rclcpp::Time freeze_stationary_since_;
+  bool freeze_reference_initialized_ = false;
+  double freeze_reset_distance_threshold_ = 0.5;
+  double freeze_timeout_s_ = 120.0;
 };
 
 } // namespace control
