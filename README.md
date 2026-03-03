@@ -127,7 +127,7 @@ Based on the project requirements (Unity simulation, semantic camera, finding ob
 
 This design ensures **modularity** and **standard compliance**.
 
-**Mission Flow:** The system starts with a pre-defined**waypoint** to navigate the drone to the cave entrance. Once at the entrance, it switches to **autonomous exploration** mode, using the exploration manager and global planner to navigate through the cave, detect lanterns, and build the map.
+**Mission Flow:** The system starts with a predefined waypoint phase (takeoff + cave entrance), then switches to autonomous exploration. During exploration, `mission_fsm_node` requests goals from the exploration service, routes goals to the selected planner (`RRT` or `A*`), applies refinement/watchdog recovery when needed, and maintains a macroplanning checkpoint graph for robust cave traversal. After mission completion (currently 1 unique lantern), FSM first attempts a graph-based return corridor to the cave entrance, then returns to start and lands.
 
 ---
 
@@ -203,7 +203,8 @@ graph TD
     end
 
     subgraph Planning_Pkg [planning]
-        global_planner[global_planner]
+        global_planner_rrt[global_planner_node (RRT*)]
+        global_planner_a[global_planner_node_a (A*)]
     end
 
     subgraph Exploring_Pkg [exploring]
@@ -232,25 +233,32 @@ graph TD
     
     depth_to_cloud -->|"/camera/depth/points<br/>(PointCloud2)"| pcl_transformer
     depth_to_cloud -->|"/camera/depth/points<br/>(PointCloud2)"| cloud_gate
+    mission_fsm_node -->|"/enable_mapping<br/>(Bool)"| cloud_gate
     cloud_gate -->|"/gated_cloud"| octomap_server
     
     lantern_detector -->|"/detected_lanterns<br/>(PoseStamped)"| mission_fsm_node
     
-    octomap_server -->|/octomap_binary| global_planner
+    octomap_server -->|/octomap_binary| global_planner_rrt
+    octomap_server -->|/octomap_binary| global_planner_a
     
-    global_planner -->|"waypoints<br/>(nav_msgs/Path)"| trajectory_generation
+    global_planner_rrt -->|"waypoints<br/>(nav_msgs/Path)"| trajectory_generation
+    global_planner_a -->|"waypoints<br/>(nav_msgs/Path)"| trajectory_generation
     
     %% FSM Orchestration loop (Order tweaked for vertical layout separation)
-    exploration_manager -- "2. Response: Goal Pose" --> mission_fsm_node
-    mission_fsm_node -- "1. Service call: /exploration/get_goal" --> exploration_manager
-    mission_fsm_node -- "3. Publish to /planner/goal" --> global_planner
-    global_planner -- "4. /planner/status (Success/Fail)" --> mission_fsm_node
+    mission_fsm_node -- "1. Service: /exploration/get_goal" --> exploration_manager
+    exploration_manager -- "2. Goal response" --> mission_fsm_node
+    exploration_manager -- "/exploration/map_ready" --> mission_fsm_node
+    mission_fsm_node -- "3a. /planner/goal (RRT)" --> global_planner_rrt
+    mission_fsm_node -- "3b. /planner_a/goal (A*)" --> global_planner_a
+    global_planner_rrt -- "4. /planner/status" --> mission_fsm_node
+    global_planner_a -- "4. /planner/status" --> mission_fsm_node
     
     trajectory_generation -->|"command/trajectory<br/>(MultiDOFJointTrajectory)"| controller_node
     
     State_Odometry -.->|/current_state_est| controller_node
     State_Odometry -.->|/current_state_est| trajectory_generation
-    State_Odometry -.->|/current_state_est| global_planner
+    State_Odometry -.->|/current_state_est| global_planner_rrt
+    State_Odometry -.->|/current_state_est| global_planner_a
     
     controller_node -->|rotor_speed_cmds| Unity_Input
     
