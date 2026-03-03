@@ -2944,6 +2944,10 @@ void MissionFsmNode::update_mode_decision() {
           (last_visited_node_id_ == predecessor_id) ||
           is_inside_node(predecessor_id, current_pose_.position);
       if (at_predecessor) {
+        if (goal_active_ && active_goal_source_ == GoalSource::TRAVEL) {
+          cancel_pub_->publish(std_msgs::msg::Empty());
+          goal_active_ = false;
+        }
         set_single_edge_priority_target(target_leaf);
         travel_mode_ = false;
         travel_path_.clear();
@@ -2963,6 +2967,10 @@ void MissionFsmNode::update_mode_decision() {
   }
 
   if (path.size() <= 2) {
+    if (goal_active_ && active_goal_source_ == GoalSource::TRAVEL) {
+      cancel_pub_->publish(std_msgs::msg::Empty());
+      goal_active_ = false;
+    }
     set_single_edge_priority_target(target_leaf);
     travel_mode_ = false;
     travel_path_.clear();
