@@ -2485,10 +2485,30 @@ void MissionFsmNode::update_checkpoint_graph() {
     if (last_visited_node_id_ == current_node_id_) {
       if (!suppress_rule_l_) {
         auto &node = graph_nodes_[current_node_id_];
-        if (node_has_resolvable_potential(current_node_id_)) {
-          potential_resolution_node_id_ = current_node_id_;
-        } else if (node.edges.size() <= 1 && !node.is_dead_end) {
-          node.is_dead_end = true;
+        const size_t node_degree =
+            node.edges.size() + (node.is_dead_end ? 1u : 0u);
+
+        // Rule L revisit behavior:
+        // Re-entering a single-edge node from outside while the last visited
+        // checkpoint is that same node means we reached a potential dead end.
+        // - If the node still has potential targets, keep explorer behavior
+        //   unchanged (no forced potential/travel switch).
+        // - If no potentials remain, classify as dead-end so its effective
+        //   degree becomes 2 (incoming edge + dead-end self edge).
+        if (current_node_id_ != entrance_node_id_ && node_degree == 1) {
+          if (!node_has_resolvable_potential(current_node_id_)) {
+            node.is_dead_end = true;
+            if (potential_resolution_node_id_ == current_node_id_) {
+              potential_resolution_node_id_ = -1;
+            }
+            RCLCPP_INFO(this->get_logger(),
+                        "Node %d re-entered without potentials. Reclassifying as dead-end.",
+                        current_node_id_);
+          } else {
+            RCLCPP_DEBUG(this->get_logger(),
+                         "Node %d re-entered with available potentials. Keeping explorer behavior unchanged.",
+                         current_node_id_);
+          }
         }
       }
     } else {
