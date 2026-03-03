@@ -1838,14 +1838,18 @@ bool MissionFsmNode::is_inside_node(int node_id, const geometry_msgs::msg::Point
   if (it == graph_nodes_.end()) {
     return false;
   }
-  return calculate_distance(it->second.position, pos) <= node_radius_;
+  return std::hypot(it->second.position.x - pos.x,
+                    it->second.position.y - pos.y) <= node_radius_;
 }
 
 std::optional<int> MissionFsmNode::find_node_containing_position(const geometry_msgs::msg::Point &pos) const {
   int closest_id = -1;
   double closest_dist = std::numeric_limits<double>::max();
   for (const auto &entry : graph_nodes_) {
-    const double d = calculate_distance(entry.second.position, pos);
+    // Node containment is evaluated on the horizontal plane so regular
+    // altitude corrections do not make us miss node-entry events.
+    const double d = std::hypot(entry.second.position.x - pos.x,
+                                entry.second.position.y - pos.y);
     if (d <= node_radius_ && d < closest_dist) {
       closest_dist = d;
       closest_id = entry.first;
@@ -2584,10 +2588,15 @@ void MissionFsmNode::update_checkpoint_graph() {
   }
 
   const bool entered_node = (current_node_id_ >= 0 && current_node_id_ != previous_node_id_);
+  const bool inside_any_node = (current_node_id_ >= 0);
 
-  if (entered_node) {
+  // Always run core graph processing while inside a node. Restrict
+  // edge-creation and rule-L entry semantics to true node transitions.
+  if (inside_any_node) {
     if (last_visited_node_id_ >= 0 && last_visited_node_id_ != current_node_id_) {
-      add_edge_between_nodes(last_visited_node_id_, current_node_id_);
+      if (entered_node) {
+        add_edge_between_nodes(last_visited_node_id_, current_node_id_);
+      }
     }
 
     // Mandatory re-filter each time we reach a checkpoint node so stale
@@ -2601,7 +2610,7 @@ void MissionFsmNode::update_checkpoint_graph() {
       last_visited_node_id_ = current_node_id_;
     }
 
-    if (last_visited_node_id_ == current_node_id_) {
+    if (entered_node && last_visited_node_id_ == current_node_id_) {
       if (!suppress_rule_l_) {
         auto &node = graph_nodes_[current_node_id_];
         const size_t node_degree =
@@ -2630,11 +2639,13 @@ void MissionFsmNode::update_checkpoint_graph() {
           }
         }
       }
-    } else {
+    } else if (entered_node) {
       suppress_rule_l_ = false;
     }
 
-    last_visited_node_id_ = current_node_id_;
+    if (entered_node || last_visited_node_id_ < 0) {
+      last_visited_node_id_ = current_node_id_;
+    }
   }
 
   if (current_node_id_ < 0 && last_visited_node_id_ >= 0 && graph_nodes_.count(last_visited_node_id_) > 0) {
