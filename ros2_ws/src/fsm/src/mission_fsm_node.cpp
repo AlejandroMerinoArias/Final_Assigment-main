@@ -2086,8 +2086,7 @@ void MissionFsmNode::simplify_checkpoint_graph() {
 
 bool MissionFsmNode::is_potential_valid_global(const geometry_msgs::msg::Point &candidate) const {
   for (const auto &entry : graph_nodes_) {
-    // "Within node_distance" must include points exactly on the threshold.
-    if (calculate_distance(entry.second.position, candidate) <= nodes_distance_) {
+    if (calculate_distance(entry.second.position, candidate) < nodes_distance_) {
       return false;
     }
   }
