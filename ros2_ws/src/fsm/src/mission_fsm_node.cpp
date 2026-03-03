@@ -582,6 +582,7 @@ void MissionFsmNode::on_state_enter(MissionState state) {
       reset_explorer_goal_filters();
       last_successful_exploration_goal_time_ = this->now();
       reset_explorer_filters_on_next_goal_ = false;
+      forced_single_edge_target_node_id_ = -1;
       if (macroplanning_enabled_ && entrance_node_id_ < 0) {
         entrance_node_id_ = create_checkpoint_node(cave_entrance_, true);
         last_visited_node_id_ = entrance_node_id_;
@@ -915,7 +916,28 @@ void MissionFsmNode::update_state() {
     // the exploration map is reported as ready by the exploration_manager.
     // This avoids spamming goal requests while the voxel map is still empty.
     if (!goal_active_ && !goal_request_pending_) {
-      if (macroplanning_enabled_ && travel_mode_ && !travel_path_.empty()) {
+      if (macroplanning_enabled_ && forced_single_edge_target_node_id_ >= 0) {
+        const auto forced_it = graph_nodes_.find(forced_single_edge_target_node_id_);
+        if (forced_it != graph_nodes_.end()) {
+          const double dist_to_forced =
+              calculate_distance(current_pose_.position, forced_it->second.position);
+          if (dist_to_forced > GOAL_REACHED_THRESHOLD) {
+            RCLCPP_INFO(this->get_logger(),
+                        "Macroplanning explorer boost: prioritizing single-edge node %d (dist=%.2f m).",
+                        forced_single_edge_target_node_id_, dist_to_forced);
+            if (!try_activate_exploration_goal(forced_it->second.position, true,
+                                              GoalSource::EXPLORER, -1)) {
+              RCLCPP_WARN(this->get_logger(),
+                          "Failed to activate boosted explorer goal for single-edge node %d.",
+                          forced_single_edge_target_node_id_);
+            }
+          } else {
+            forced_single_edge_target_node_id_ = -1;
+          }
+        } else {
+          forced_single_edge_target_node_id_ = -1;
+        }
+      } else if (macroplanning_enabled_ && travel_mode_ && !travel_path_.empty()) {
         const int next_node_id = travel_path_.front();
         if (graph_nodes_.count(next_node_id) > 0) {
           RCLCPP_INFO(this->get_logger(),
@@ -2384,6 +2406,7 @@ void MissionFsmNode::reset_graph_to_entrance() {
   previous_node_id_ = entrance_node_id_;
   travel_mode_ = false;
   potential_resolution_node_id_ = -1;
+  forced_single_edge_target_node_id_ = -1;
   travel_path_.clear();
 }
 
@@ -2537,6 +2560,30 @@ void MissionFsmNode::update_mode_decision() {
     if (degree == 1) {
       single_edge_nodes.push_back(entry.first);
     }
+  }
+
+  const int resolved_current_node = (current_node_id_ >= 0) ? current_node_id_ : last_visited_node_id_;
+  if (single_edge_nodes.size() == 1 && resolved_current_node >= 0 &&
+      graph_nodes_.count(resolved_current_node) > 0) {
+    const int single_edge_node_id = single_edge_nodes.front();
+    const auto current_degree = graph_nodes_[resolved_current_node].edges.size() +
+                                (graph_nodes_[resolved_current_node].is_dead_end ? 1 : 0);
+    const bool in_middle_node = (resolved_current_node != single_edge_node_id &&
+                                 resolved_current_node != entrance_node_id_ &&
+                                 current_degree > 1);
+    if (in_middle_node) {
+      forced_single_edge_target_node_id_ = single_edge_node_id;
+      travel_mode_ = false;
+      potential_resolution_node_id_ = -1;
+      travel_path_.clear();
+      resume_explorer_mode_after_travel();
+      return;
+    }
+  }
+  if (forced_single_edge_target_node_id_ >= 0 &&
+      (std::find(single_edge_nodes.begin(), single_edge_nodes.end(),
+                 forced_single_edge_target_node_id_) == single_edge_nodes.end())) {
+    forced_single_edge_target_node_id_ = -1;
   }
 
   if (single_edge_nodes.empty()) {
