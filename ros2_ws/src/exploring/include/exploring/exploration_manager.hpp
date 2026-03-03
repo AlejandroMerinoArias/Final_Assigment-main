@@ -40,6 +40,7 @@ namespace planning {
 struct FrontierCandidate {
   octomap::point3d position;
   double utility = 0.0;
+  bool is_priority_target = false;
 };
 
 struct FailedGoalRegion {
@@ -83,6 +84,8 @@ private:
   void map_callback(const octomap_msgs::msg::Octomap::SharedPtr msg);
   void
   blacklist_callback(const geometry_msgs::msg::PointStamped::SharedPtr msg);
+  void priority_target_callback(
+      const geometry_msgs::msg::PointStamped::SharedPtr msg);
 
   // --- Service handler --------------------------------------------------
 
@@ -172,6 +175,8 @@ private:
   rclcpp::Subscription<octomap_msgs::msg::Octomap>::SharedPtr map_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr
       blacklist_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr
+      priority_target_sub_;
   rclcpp::Service<exploring::srv::GetExplorationGoal>::SharedPtr goal_service_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr viz_pub_;
   rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr slice_pub_;
@@ -191,6 +196,7 @@ private:
   nav_msgs::msg::OccupancyGrid current_sliced_map_;
   std::vector<octomap::point3d> blacklisted_goals_;
   std::vector<FailedGoalRegion> failed_goal_regions_;
+  std::optional<octomap::point3d> priority_target_;
 
   // Entrance / global reference for generic "forward into cave" bias.
   // Set to the drone pose when we receive the FIRST exploration goal request.
@@ -269,6 +275,8 @@ private:
   double failed_region_base_reject_radius_;
   double failed_region_reject_radius_gain_;
   int failed_region_max_hits_;
+  double priority_target_reached_radius_;
+  double priority_target_reward_gain_;
 };
 
 } // namespace planning

@@ -138,6 +138,16 @@ Within `EXPLORE`, every active goal is monitored for:
 - **No movement**: After 10 s, if the drone has moved less than `MIN_MOVEMENT_THRESHOLD`, the goal is abandoned.
 - **Goal-selection stuck watchdog**: If goal service calls keep failing (`consecutive_goal_request_failures_` ≥ `explore_goal_selection_max_failures_`) or no successful goal has been dispatched for more than `explore_goal_selection_timeout_` seconds, a warning is emitted.
 
+### 7. Single-Edge Node Recovery (Macroplanning)
+
+When macroplanning identifies that the mission should revisit a **single-edge node**, the FSM now uses a two-phase behavior designed to avoid stale explorer goals:
+
+1. **Travel phase**: travel mode is used only to go to the **predecessor node** of the selected single-edge node.
+2. **Priority exploration phase**: once at that predecessor (or already there), travel mode is released and exploration resumes, but with a strong priority signal (`/exploration/priority_target`) aimed at the single-edge node.
+3. **Automatic deactivation**: when the drone enters a 1.0 m radius around that node, the priority signal is cleared.
+
+This logic is specific to single-edge-node dispatching; other travel-mode uses are unchanged.
+
 ---
 
 ## ROS 2 Interface
@@ -163,6 +173,7 @@ Within `EXPLORE`, every active goal is monitored for:
 | `/fsm/state` | `std_msgs/String` | Current FSM state string |
 | `/fsm/cancel` | `std_msgs/Empty` | Cancel signal for current goal |
 | `/exploration/blacklist_goal` | `geometry_msgs/PointStamped` | Goals to permanently blacklist |
+| `/exploration/priority_target` | `geometry_msgs/PointStamped` | High-priority macroplanning target for exploration mode |
 | `/fsm/drone_marker` | `visualization_msgs/Marker` | RViz drone position marker |
 | `/enable_mapping` | `std_msgs/Bool` | Enables cloud gating when entering EXPLORE |
 

@@ -157,6 +157,8 @@ private:
                                         geometry_msgs::msg::Point &candidate_out);
   void clear_node_relocation_state(int node_id);
   void mark_potential_node_unreachable_near(const geometry_msgs::msg::Point &pos);
+  void set_single_edge_priority_target(int target_node_id);
+  void clear_single_edge_priority_target();
 
   struct PotentialNode {
     geometry_msgs::msg::Point position;
@@ -203,6 +205,7 @@ private:
       checkpoint_markers_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr enable_mapping_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr blacklist_goal_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr priority_target_pub_;
   // --- Timer ---
   rclcpp::TimerBase::SharedPtr timer_;
 
@@ -298,6 +301,8 @@ private:
   double goal_request_timeout_s_ = 4.0;
   std::unordered_map<int, geometry_msgs::msg::Point> node_relocation_origin_;
   std::unordered_map<int, int> node_relocation_attempts_;
+  int single_edge_priority_target_node_id_ = -1;
+  double single_edge_priority_reached_radius_ = 1.0;
 };
 
 } // namespace control

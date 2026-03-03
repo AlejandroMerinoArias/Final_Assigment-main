@@ -41,7 +41,9 @@ ExplorationManager::ExplorationManager()
       failed_region_merge_radius_(3.0),
       failed_region_base_reject_radius_(2.0),
       failed_region_reject_radius_gain_(0.7),
-      failed_region_max_hits_(6) {
+      failed_region_max_hits_(6),
+      priority_target_reached_radius_(1.0),
+      priority_target_reward_gain_(1000.0) {
   // Declare and read parameters
   this->declare_parameter("min_frontier_size", min_frontier_size_);
   this->declare_parameter("blacklist_radius", blacklist_radius_);
@@ -79,6 +81,8 @@ ExplorationManager::ExplorationManager()
   this->declare_parameter("failed_region_base_reject_radius", failed_region_base_reject_radius_);
   this->declare_parameter("failed_region_reject_radius_gain", failed_region_reject_radius_gain_);
   this->declare_parameter("failed_region_max_hits", failed_region_max_hits_);
+  this->declare_parameter("priority_target_reached_radius", priority_target_reached_radius_);
+  this->declare_parameter("priority_target_reward_gain", priority_target_reward_gain_);
 
   min_frontier_size_ = this->get_parameter("min_frontier_size").as_int();
   blacklist_radius_ = this->get_parameter("blacklist_radius").as_double();
@@ -114,6 +118,8 @@ ExplorationManager::ExplorationManager()
   failed_region_base_reject_radius_ = this->get_parameter("failed_region_base_reject_radius").as_double();
   failed_region_reject_radius_gain_ = this->get_parameter("failed_region_reject_radius_gain").as_double();
   failed_region_max_hits_ = this->get_parameter("failed_region_max_hits").as_int();
+  priority_target_reached_radius_ = this->get_parameter("priority_target_reached_radius").as_double();
+  priority_target_reward_gain_ = this->get_parameter("priority_target_reward_gain").as_double();
   
   // Store base thresholds for stuck-mode relaxation
   base_min_goal_distance_ = min_goal_distance_;
@@ -153,6 +159,12 @@ ExplorationManager::ExplorationManager()
       "/exploration/blacklist_goal", 10,
       std::bind(&ExplorationManager::blacklist_callback, this,
                 std::placeholders::_1));
+
+  priority_target_sub_ =
+      this->create_subscription<geometry_msgs::msg::PointStamped>(
+          "/exploration/priority_target", 10,
+          std::bind(&ExplorationManager::priority_target_callback, this,
+                    std::placeholders::_1));
 
   // Service server
   goal_service_ = this->create_service<exploring::srv::GetExplorationGoal>(
@@ -246,6 +258,23 @@ void ExplorationManager::blacklist_callback(
       failed_goal_regions_.size());
 }
 
+void ExplorationManager::priority_target_callback(
+    const geometry_msgs::msg::PointStamped::SharedPtr msg) {
+  if (!std::isfinite(msg->point.x) || !std::isfinite(msg->point.y) ||
+      !std::isfinite(msg->point.z)) {
+    priority_target_.reset();
+    RCLCPP_INFO(this->get_logger(), "Priority target cleared by FSM.");
+    return;
+  }
+
+  priority_target_ = octomap::point3d(static_cast<float>(msg->point.x),
+                                      static_cast<float>(msg->point.y),
+                                      static_cast<float>(msg->point.z));
+  RCLCPP_INFO(this->get_logger(),
+              "Priority target set to (%.2f, %.2f, %.2f).",
+              msg->point.x, msg->point.y, msg->point.z);
+}
+
 // ===========================================================================
 // Service handler
 // ===========================================================================
@@ -279,6 +308,14 @@ void ExplorationManager::handle_get_goal(
   octomap::point3d drone_pos(static_cast<float>(drone_x),
                              static_cast<float>(drone_y),
                              static_cast<float>(drone_z));
+
+  if (priority_target_ &&
+      drone_pos.distance(*priority_target_) <= priority_target_reached_radius_) {
+    RCLCPP_INFO(this->get_logger(),
+                "Priority target reached within %.2f m. Disabling priority reward.",
+                priority_target_reached_radius_);
+    priority_target_.reset();
+  }
 
   // Lazy entrance init
   if (!has_entrance_pos_) {
@@ -314,6 +351,12 @@ void ExplorationManager::handle_get_goal(
   int effective_candidates = num_candidates_ + (consecutive_failures_ * 10);
   
   auto candidates = sample_candidates(downsampled, effective_candidates);
+  if (priority_target_) {
+    FrontierCandidate priority_cand;
+    priority_cand.position = *priority_target_;
+    priority_cand.is_priority_target = true;
+    candidates.push_back(priority_cand);
+  }
 
   // 3.5. Compute stuck mode and apply dynamic filter relaxation
   auto [stuck_mode, severity] = computeStuckMode();
@@ -421,6 +464,15 @@ void ExplorationManager::handle_get_goal(
       filt_los = 0, filt_recent = 0, filt_backtrack = 0;
 
   for (auto &cand : candidates) {
+    if (cand.is_priority_target) {
+      cand.utility = std::numeric_limits<double>::max() / 4.0;
+      if (cand.utility > best_utility) {
+        best_utility = cand.utility;
+        best_candidate = &cand;
+      }
+      ++num_evaluated;
+      continue;
+    }
     // Filter: repeated-failure regions (expanded around goals that failed many times)
     if (is_in_failed_region(cand.position)) {
       ++filt_blacklist;
@@ -523,6 +575,11 @@ void ExplorationManager::handle_get_goal(
     cand.utility = evaluate_candidate(cand.position, drone_pos,
                                       effective_vertical_penalty_weight,
                                       forward_ref_xy);
+
+    if (priority_target_) {
+      const double d_priority = cand.position.distance(*priority_target_);
+      cand.utility *= (1.0 + priority_target_reward_gain_ / (1.0 + d_priority));
+    }
     num_evaluated++;
 
     if (cand.utility > best_utility) {
