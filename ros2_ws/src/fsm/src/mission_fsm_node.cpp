@@ -2,9 +2,9 @@
 
 #include <algorithm>
 #include <array>
+#include <functional>
 #include <limits>
 #include <queue>
-#include <functional>
 
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 
@@ -36,37 +36,41 @@ double point_to_segment_distance_xy(const geometry_msgs::msg::Point &p,
   projection.z = p.z;
   return xy_distance(p, projection);
 }
-}  // namespace
+} // namespace
 
 MissionFsmNode::MissionFsmNode()
     : Node("mission_fsm_node"), current_state_(MissionState::INIT),
       pose_received_(false), mission_start_signal_received_(false),
       goal_active_(false), goal_request_pending_(false),
       lanterns_found_count_(0), lantern_dedup_threshold_(2.5),
-      takeoff_altitude_(2.0), z_retry_index_(0),
-      goal_set_time_(this->now()), min_exploration_goal_distance_(2.0),
-      consecutive_too_close_rejections_(0),
+      takeoff_altitude_(2.0), z_retry_index_(0), goal_set_time_(this->now()),
+      min_exploration_goal_distance_(2.0), consecutive_too_close_rejections_(0),
       last_successful_exploration_goal_time_(this->now()),
       last_replan_time_(this->now()) {
   // Initialize positions
   start_position_.x = 0.0;
   start_position_.y = 0.0;
   start_position_.z = 0.0;
-  
+
   // Initialize goal tracking
   last_pose_at_goal_set_.x = 0.0;
   last_pose_at_goal_set_.y = 0.0;
   last_pose_at_goal_set_.z = 0.0;
-  
+
   // Declare and read parameters
   this->declare_parameter("lantern_dedup_threshold", lantern_dedup_threshold_);
-  lantern_dedup_threshold_ = this->get_parameter("lantern_dedup_threshold").as_double();
-  this->declare_parameter("min_exploration_goal_distance", min_exploration_goal_distance_);
-  min_exploration_goal_distance_ = this->get_parameter("min_exploration_goal_distance").as_double();
-  this->declare_parameter("explore_goal_selection_timeout", explore_goal_selection_timeout_);
+  lantern_dedup_threshold_ =
+      this->get_parameter("lantern_dedup_threshold").as_double();
+  this->declare_parameter("min_exploration_goal_distance",
+                          min_exploration_goal_distance_);
+  min_exploration_goal_distance_ =
+      this->get_parameter("min_exploration_goal_distance").as_double();
+  this->declare_parameter("explore_goal_selection_timeout",
+                          explore_goal_selection_timeout_);
   explore_goal_selection_timeout_ =
       this->get_parameter("explore_goal_selection_timeout").as_double();
-  this->declare_parameter("explore_goal_selection_max_failures", explore_goal_selection_max_failures_);
+  this->declare_parameter("explore_goal_selection_max_failures",
+                          explore_goal_selection_max_failures_);
   explore_goal_selection_max_failures_ =
       this->get_parameter("explore_goal_selection_max_failures").as_int();
 
@@ -77,7 +81,7 @@ MissionFsmNode::MissionFsmNode()
   z_retry_max_attempts_ = this->get_parameter("z_retry_max_attempts").as_int();
   this->declare_parameter("z_retry_step", z_retry_step_);
   z_retry_step_ = this->get_parameter("z_retry_step").as_double();
-  
+
   // Declare and read planner type parameter (default: RRT)
   this->declare_parameter("planner_type", "A_star");
   planner_type_ = this->get_parameter("planner_type").as_string();
@@ -87,31 +91,44 @@ MissionFsmNode::MissionFsmNode()
   takeoff_altitude_ = this->get_parameter("takeoff_altitude").as_double();
 
   this->declare_parameter("macroplanning_enabled", macroplanning_enabled_);
-  macroplanning_enabled_ = this->get_parameter("macroplanning_enabled").as_bool();
+  macroplanning_enabled_ =
+      this->get_parameter("macroplanning_enabled").as_bool();
   this->declare_parameter("nodes_distance", nodes_distance_);
   nodes_distance_ = this->get_parameter("nodes_distance").as_double();
   this->declare_parameter("node_radius", node_radius_);
   node_radius_ = this->get_parameter("node_radius").as_double();
-  this->declare_parameter("max_potential_node_range", max_potential_node_range_);
-  max_potential_node_range_ = this->get_parameter("max_potential_node_range").as_double();
-  this->declare_parameter("potential_node_backoff_distance", potential_node_backoff_distance_);
+  this->declare_parameter("max_potential_node_range",
+                          max_potential_node_range_);
+  max_potential_node_range_ =
+      this->get_parameter("max_potential_node_range").as_double();
+  this->declare_parameter("potential_node_backoff_distance",
+                          potential_node_backoff_distance_);
   potential_node_backoff_distance_ =
       this->get_parameter("potential_node_backoff_distance").as_double();
-  this->declare_parameter("potential_angle_threshold_deg", potential_angle_threshold_deg_);
-  potential_angle_threshold_deg_ = this->get_parameter("potential_angle_threshold_deg").as_double();
+  this->declare_parameter("potential_angle_threshold_deg",
+                          potential_angle_threshold_deg_);
+  potential_angle_threshold_deg_ =
+      this->get_parameter("potential_angle_threshold_deg").as_double();
   this->declare_parameter("seen_point_timeout_s", seen_point_timeout_s_);
-  seen_point_timeout_s_ = this->get_parameter("seen_point_timeout_s").as_double();
+  seen_point_timeout_s_ =
+      this->get_parameter("seen_point_timeout_s").as_double();
   this->declare_parameter("goal_request_timeout_s", goal_request_timeout_s_);
-  goal_request_timeout_s_ = this->get_parameter("goal_request_timeout_s").as_double();
-  this->declare_parameter("force_explorer_timeout_s", force_explorer_timeout_s_);
-  force_explorer_timeout_s_ = this->get_parameter("force_explorer_timeout_s").as_double();
-  this->declare_parameter("single_edge_priority_reached_radius", single_edge_priority_reached_radius_);
+  goal_request_timeout_s_ =
+      this->get_parameter("goal_request_timeout_s").as_double();
+  this->declare_parameter("force_explorer_timeout_s",
+                          force_explorer_timeout_s_);
+  force_explorer_timeout_s_ =
+      this->get_parameter("force_explorer_timeout_s").as_double();
+  this->declare_parameter("single_edge_priority_reached_radius",
+                          single_edge_priority_reached_radius_);
   single_edge_priority_reached_radius_ =
       this->get_parameter("single_edge_priority_reached_radius").as_double();
-  this->declare_parameter("waypoint_obstacle_clearance", waypoint_obstacle_clearance_);
+  this->declare_parameter("waypoint_obstacle_clearance",
+                          waypoint_obstacle_clearance_);
   waypoint_obstacle_clearance_ =
       this->get_parameter("waypoint_obstacle_clearance").as_double();
-  this->declare_parameter("freeze_reset_distance_threshold", freeze_reset_distance_threshold_);
+  this->declare_parameter("freeze_reset_distance_threshold",
+                          freeze_reset_distance_threshold_);
   freeze_reset_distance_threshold_ =
       this->get_parameter("freeze_reset_distance_threshold").as_double();
   this->declare_parameter("freeze_timeout_s", freeze_timeout_s_);
@@ -123,7 +140,8 @@ MissionFsmNode::MissionFsmNode()
   cave_entrance_.z = 18.0;
 
   // Z-retry altitudes: start with default, then try lower, then higher
-  // z_retry_altitudes_ is now built dynamically per goal in request_exploration_goal()
+  // z_retry_altitudes_ is now built dynamically per goal in
+  // request_exploration_goal()
   // --- Subscribers ---
   odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
       "/current_state_est", 10,
@@ -153,14 +171,15 @@ MissionFsmNode::MissionFsmNode()
                     exploration_map_ready_ ? "true" : "false");
       });
 
-
   depth_points_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
       "/camera/depth/points_world", rclcpp::SensorDataQoS(),
-      std::bind(&MissionFsmNode::depth_points_callback, this, std::placeholders::_1));
+      std::bind(&MissionFsmNode::depth_points_callback, this,
+                std::placeholders::_1));
 
   planner_path_sub_ = this->create_subscription<nav_msgs::msg::Path>(
       "waypoints", 10,
-      std::bind(&MissionFsmNode::planner_path_callback, this, std::placeholders::_1));
+      std::bind(&MissionFsmNode::planner_path_callback, this,
+                std::placeholders::_1));
 
   // --- Service Clients ---
   exploration_goal_client_ =
@@ -187,18 +206,22 @@ MissionFsmNode::MissionFsmNode()
 
   drone_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>(
       "/fsm/drone_marker", 10);
-  checkpoint_markers_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
-      "/fsm/checkpoint_markers", 10);
+  checkpoint_markers_pub_ =
+      this->create_publisher<visualization_msgs::msg::MarkerArray>(
+          "/fsm/checkpoint_markers", 10);
 
   enable_mapping_pub_ = this->create_publisher<std_msgs::msg::Bool>(
       "/enable_mapping", rclcpp::QoS(1).transient_local().reliable());
 
-  blacklist_goal_pub_ = this->create_publisher<geometry_msgs::msg::PointStamped>(
-      "/exploration/blacklist_goal", 10);
-  priority_target_pub_ = this->create_publisher<geometry_msgs::msg::PointStamped>(
-      "/exploration/priority_target", 10);
-  punishment_target_pub_ = this->create_publisher<geometry_msgs::msg::PointStamped>(
-      "/exploration/punishment_target", 10);
+  blacklist_goal_pub_ =
+      this->create_publisher<geometry_msgs::msg::PointStamped>(
+          "/exploration/blacklist_goal", 10);
+  priority_target_pub_ =
+      this->create_publisher<geometry_msgs::msg::PointStamped>(
+          "/exploration/priority_target", 10);
+  punishment_target_pub_ =
+      this->create_publisher<geometry_msgs::msg::PointStamped>(
+          "/exploration/punishment_target", 10);
 
   // --- Timer: 10 Hz main loop ---
   timer_ =
@@ -243,7 +266,8 @@ void MissionFsmNode::lantern_callback(
   // local frame (e.g. camera) that moves with the drone.
   geometry_msgs::msg::PoseStamped lantern_world;
   try {
-    lantern_world = tf_buffer_->transform(*msg, "world", tf2::durationFromSec(1.0));
+    lantern_world =
+        tf_buffer_->transform(*msg, "world", tf2::durationFromSec(1.0));
   } catch (tf2::TransformException &ex) {
     RCLCPP_WARN(this->get_logger(), "Could not transform lantern to world: %s",
                 ex.what());
@@ -254,13 +278,14 @@ void MissionFsmNode::lantern_callback(
   for (const auto &existing_pose : detected_lantern_poses_) {
     double dist =
         calculate_distance(lantern_world.pose.position, existing_pose.position);
-    
+
     // Debug logging for distance check
-    RCLCPP_INFO(this->get_logger(), 
-                "Checking lantern candidate [%.2f, %.2f, %.2f] against existing [%.2f, %.2f, %.2f]: dist=%.2f",
-                lantern_world.pose.position.x, lantern_world.pose.position.y, lantern_world.pose.position.z,
-                existing_pose.position.x, existing_pose.position.y, existing_pose.position.z,
-                dist);
+    RCLCPP_INFO(this->get_logger(),
+                "Checking lantern candidate [%.2f, %.2f, %.2f] against "
+                "existing [%.2f, %.2f, %.2f]: dist=%.2f",
+                lantern_world.pose.position.x, lantern_world.pose.position.y,
+                lantern_world.pose.position.z, existing_pose.position.x,
+                existing_pose.position.y, existing_pose.position.z, dist);
 
     if (dist <= lantern_dedup_threshold_) {
       is_new = false;
@@ -326,17 +351,20 @@ void MissionFsmNode::monitor_frozen_progress() {
     return;
   }
 
-  const double stationary_time = (this->now() - freeze_stationary_since_).seconds();
+  const double stationary_time =
+      (this->now() - freeze_stationary_since_).seconds();
   if (stationary_time >= freeze_timeout_s_) {
     execute_frozen_recovery();
   }
 }
 
 void MissionFsmNode::execute_frozen_recovery() {
-  RCLCPP_ERROR(this->get_logger(),
-               "Drone frozen watchdog triggered (stationary %.1f s within %.2f m). "
-               "Resetting mission/exploration state while preserving macroplanning graph.",
-               freeze_timeout_s_, freeze_reset_distance_threshold_);
+  RCLCPP_ERROR(
+      this->get_logger(),
+      "Drone frozen watchdog triggered (stationary %.1f s within %.2f m). "
+      "Resetting mission/exploration state while preserving macroplanning "
+      "graph.",
+      freeze_timeout_s_, freeze_reset_distance_threshold_);
 
   cancel_pub_->publish(std_msgs::msg::Empty());
 
@@ -390,9 +418,10 @@ void MissionFsmNode::execute_frozen_recovery() {
 void MissionFsmNode::planner_status_callback(
     const std_msgs::msg::String::SharedPtr msg) {
   if (!goal_active_) {
-    RCLCPP_DEBUG(this->get_logger(),
-                 "Ignoring planner status '%s' because no goal is currently active.",
-                 msg->data.c_str());
+    RCLCPP_DEBUG(
+        this->get_logger(),
+        "Ignoring planner status '%s' because no goal is currently active.",
+        msg->data.c_str());
     return;
   }
 
@@ -410,13 +439,15 @@ void MissionFsmNode::planner_status_callback(
         if (!entry.second.is_provisional) {
           continue;
         }
-        if (calculate_distance(entry.second.position, current_goal_) <= node_radius_) {
+        if (calculate_distance(entry.second.position, current_goal_) <=
+            node_radius_) {
           provisional_failed_nodes.push_back(entry.first);
         }
       }
       for (const int node_id : provisional_failed_nodes) {
         RCLCPP_WARN(this->get_logger(),
-                    "Removing provisional node %d after PLAN_FAILED near [%.2f, %.2f, %.2f].",
+                    "Removing provisional node %d after PLAN_FAILED near "
+                    "[%.2f, %.2f, %.2f].",
                     node_id, current_goal_.x, current_goal_.y, current_goal_.z);
         remove_checkpoint_node(node_id);
       }
@@ -428,17 +459,21 @@ void MissionFsmNode::planner_status_callback(
         active_goal_source_ == GoalSource::POTENTIAL &&
         active_goal_anchor_node_id_ >= 0) {
       geometry_msgs::msg::Point potential_goal;
-      if (pop_next_potential_for_node(active_goal_anchor_node_id_, potential_goal)) {
-        RCLCPP_WARN(this->get_logger(),
-                    "Potential goal failed. Trying next potential from anchor %d.",
-                    active_goal_anchor_node_id_);
-        try_activate_exploration_goal(potential_goal, true, GoalSource::POTENTIAL,
+      if (pop_next_potential_for_node(active_goal_anchor_node_id_,
+                                      potential_goal)) {
+        RCLCPP_WARN(
+            this->get_logger(),
+            "Potential goal failed. Trying next potential from anchor %d.",
+            active_goal_anchor_node_id_);
+        try_activate_exploration_goal(potential_goal, true,
+                                      GoalSource::POTENTIAL,
                                       active_goal_anchor_node_id_);
         return;
       }
-      RCLCPP_WARN(this->get_logger(),
-                  "All potential goals failed for anchor %d. Resuming travel mode.",
-                  active_goal_anchor_node_id_);
+      RCLCPP_WARN(
+          this->get_logger(),
+          "All potential goals failed for anchor %d. Resuming travel mode.",
+          active_goal_anchor_node_id_);
       potential_resolution_node_id_ = -1;
       active_goal_anchor_node_id_ = -1;
       active_goal_source_ = GoalSource::TRAVEL;
@@ -454,19 +489,22 @@ void MissionFsmNode::planner_status_callback(
 
       if (target_node_id >= 0 && graph_nodes_.count(target_node_id) > 0) {
         geometry_msgs::msg::Point alternate_position;
-        if (find_alternate_position_for_node(target_node_id, alternate_position)) {
+        if (find_alternate_position_for_node(target_node_id,
+                                             alternate_position)) {
           graph_nodes_[target_node_id].position = alternate_position;
           RCLCPP_WARN(this->get_logger(),
-                      "Travel checkpoint node %d unreachable. Retrying with nearby node position [%.2f, %.2f, %.2f].",
-                      target_node_id, alternate_position.x, alternate_position.y,
-                      alternate_position.z);
+                      "Travel checkpoint node %d unreachable. Retrying with "
+                      "nearby node position [%.2f, %.2f, %.2f].",
+                      target_node_id, alternate_position.x,
+                      alternate_position.y, alternate_position.z);
           try_activate_exploration_goal(alternate_position, true,
                                         GoalSource::TRAVEL, -1);
           return;
         }
 
         RCLCPP_ERROR(this->get_logger(),
-                     "Travel checkpoint node %d remained unreachable after nearby retries. Falling back to explorer mode.",
+                     "Travel checkpoint node %d remained unreachable after "
+                     "nearby retries. Falling back to explorer mode.",
                      target_node_id);
         clear_node_relocation_state(target_node_id);
       }
@@ -531,32 +569,35 @@ void MissionFsmNode::exploration_goal_callback(
   planner_goal.pose.orientation.w = 1.0;
 
   // Check minimum distance - reject goals that are too close
-  double goal_dist = std::sqrt(
-      (planner_goal.pose.position.x - current_pose_.position.x) *
-      (planner_goal.pose.position.x - current_pose_.position.x) +
-      (planner_goal.pose.position.y - current_pose_.position.y) *
-      (planner_goal.pose.position.y - current_pose_.position.y));
-  
+  double goal_dist =
+      std::sqrt((planner_goal.pose.position.x - current_pose_.position.x) *
+                    (planner_goal.pose.position.x - current_pose_.position.x) +
+                (planner_goal.pose.position.y - current_pose_.position.y) *
+                    (planner_goal.pose.position.y - current_pose_.position.y));
+
   if (goal_dist < min_exploration_goal_distance_) {
     ++consecutive_too_close_rejections_;
-    
-    // If we've rejected 3 consecutive goals for being too close, accept this one anyway
-    // to prevent infinite loop
-    if (consecutive_too_close_rejections_ >= MAX_CONSECUTIVE_TOO_CLOSE_REJECTIONS) {
-      RCLCPP_WARN(this->get_logger(),
-                  "Exploration goal too close (%.2f m < %.2f m), but accepting anyway "
-                  "after %d consecutive rejections to avoid getting stuck.",
-                  goal_dist, min_exploration_goal_distance_,
-                  consecutive_too_close_rejections_);
-      consecutive_too_close_rejections_ = 0;  // Reset counter
+
+    // If we've rejected 3 consecutive goals for being too close, accept this
+    // one anyway to prevent infinite loop
+    if (consecutive_too_close_rejections_ >=
+        MAX_CONSECUTIVE_TOO_CLOSE_REJECTIONS) {
+      RCLCPP_WARN(
+          this->get_logger(),
+          "Exploration goal too close (%.2f m < %.2f m), but accepting anyway "
+          "after %d consecutive rejections to avoid getting stuck.",
+          goal_dist, min_exploration_goal_distance_,
+          consecutive_too_close_rejections_);
+      consecutive_too_close_rejections_ = 0; // Reset counter
       // Continue to accept the goal below
     } else {
-      RCLCPP_WARN(this->get_logger(),
-                  "Exploration goal too close (%.2f m < %.2f m). "
-                  "Rejecting (consecutive rejections: %d/%d). Requesting new goal.",
-                  goal_dist, min_exploration_goal_distance_,
-                  consecutive_too_close_rejections_,
-                  MAX_CONSECUTIVE_TOO_CLOSE_REJECTIONS);
+      RCLCPP_WARN(
+          this->get_logger(),
+          "Exploration goal too close (%.2f m < %.2f m). "
+          "Rejecting (consecutive rejections: %d/%d). Requesting new goal.",
+          goal_dist, min_exploration_goal_distance_,
+          consecutive_too_close_rejections_,
+          MAX_CONSECUTIVE_TOO_CLOSE_REJECTIONS);
       // Request a new goal immediately
       request_exploration_goal();
       return;
@@ -571,17 +612,16 @@ void MissionFsmNode::exploration_goal_callback(
   current_goal_.x = planner_goal.pose.position.x;
   current_goal_.y = planner_goal.pose.position.y;
   current_goal_.z = planner_goal.pose.position.z;
-  
+
   // Track when goal was set and drone position for timeout/movement detection
   goal_set_time_ = this->now();
   last_pose_at_goal_set_ = current_pose_.position;
 
   if (planner_type_ == "RRT") {
     planner_goal_pub_->publish(planner_goal);
-    
+
   } else {
     planner_goal_pub_a_->publish(planner_goal);
-    
   }
   goal_active_ = true;
   active_goal_source_ = GoalSource::EXPLORER;
@@ -594,10 +634,10 @@ void MissionFsmNode::exploration_goal_callback(
               planner_goal.pose.position.z, goal_dist);
 }
 
-
 void MissionFsmNode::depth_points_callback(
     const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
-  if (!macroplanning_enabled_ || !pose_received_ || msg->width == 0 || msg->data.empty()) {
+  if (!macroplanning_enabled_ || !pose_received_ || msg->width == 0 ||
+      msg->data.empty()) {
     return;
   }
 
@@ -645,10 +685,11 @@ void MissionFsmNode::depth_points_callback(
 
   if (found) {
     geometry_msgs::msg::Point backed_off_point = best_point;
-    const double line_dist = calculate_distance(best_point, current_pose_.position);
+    const double line_dist =
+        calculate_distance(best_point, current_pose_.position);
     if (line_dist > 1e-6 && potential_node_backoff_distance_ > 0.0) {
-      const double applied_backoff =
-          std::min(potential_node_backoff_distance_, std::max(0.0, line_dist - 0.1));
+      const double applied_backoff = std::min(potential_node_backoff_distance_,
+                                              std::max(0.0, line_dist - 0.1));
       const double ux = (current_pose_.position.x - best_point.x) / line_dist;
       const double uy = (current_pose_.position.y - best_point.y) / line_dist;
       const double uz = (current_pose_.position.z - best_point.z) / line_dist;
@@ -721,7 +762,8 @@ void MissionFsmNode::on_state_enter(MissionState state) {
       double target_x = current_pose_.position.x;
       double target_y = current_pose_.position.y;
       double target_z =
-          current_pose_.position.z + takeoff_altitude_; // Ascend takeoff_altitude_ m relative to start
+          current_pose_.position.z +
+          takeoff_altitude_; // Ascend takeoff_altitude_ m relative to start
 
       RCLCPP_INFO(this->get_logger(),
                   "Takeoff Target (current_state_est): [%.2f, %.2f, %.2f]",
@@ -744,34 +786,32 @@ void MissionFsmNode::on_state_enter(MissionState state) {
     goal_active_ = true;
     break;
 
-  case MissionState::EXPLORE:
-    {
-      RCLCPP_INFO(this->get_logger(),
-                  "Entering exploration mode. Lanterns found: %zu/%zu",
-                  lanterns_found_count_, TARGET_LANTERN_COUNT);
-      // Enable mapping (cloud gate will start forwarding point clouds)
-      auto enable_msg = std_msgs::msg::Bool();
-      enable_msg.data = true;
-      enable_mapping_pub_->publish(enable_msg);
-      // Reset Z-retry for new exploration goal
-      z_retry_index_ = 0;
-      goal_active_ = false;
-      active_goal_source_ = GoalSource::EXPLORER;
-      active_goal_anchor_node_id_ = -1;
-      potential_objective_timer_active_ = false;
-      goal_request_pending_ = false;
-      // Reset goal-selection tracking when (re)entering exploration
-      reset_explorer_goal_filters();
-      last_successful_exploration_goal_time_ = this->now();
-      reset_explorer_filters_on_next_goal_ = false;
-      returning_to_entrance_via_travel_ = false;
-      if (macroplanning_enabled_ && entrance_node_id_ < 0) {
-        entrance_node_id_ = create_checkpoint_node(cave_entrance_, true);
-        last_visited_node_id_ = entrance_node_id_;
-      }
-      // Main loop (update_state) will request the goal automatically
+  case MissionState::EXPLORE: {
+    RCLCPP_INFO(this->get_logger(),
+                "Entering exploration mode. Lanterns found: %zu/%zu",
+                lanterns_found_count_, TARGET_LANTERN_COUNT);
+    // Enable mapping (cloud gate will start forwarding point clouds)
+    auto enable_msg = std_msgs::msg::Bool();
+    enable_msg.data = true;
+    enable_mapping_pub_->publish(enable_msg);
+    // Reset Z-retry for new exploration goal
+    z_retry_index_ = 0;
+    goal_active_ = false;
+    active_goal_source_ = GoalSource::EXPLORER;
+    active_goal_anchor_node_id_ = -1;
+    potential_objective_timer_active_ = false;
+    goal_request_pending_ = false;
+    // Reset goal-selection tracking when (re)entering exploration
+    reset_explorer_goal_filters();
+    last_successful_exploration_goal_time_ = this->now();
+    reset_explorer_filters_on_next_goal_ = false;
+    returning_to_entrance_via_travel_ = false;
+    if (macroplanning_enabled_ && entrance_node_id_ < 0) {
+      entrance_node_id_ = create_checkpoint_node(cave_entrance_, true);
+      last_visited_node_id_ = entrance_node_id_;
     }
-    break;
+    // Main loop (update_state) will request the goal automatically
+  } break;
 
   case MissionState::REFINE_GOAL:
     RCLCPP_INFO(this->get_logger(), "Entering goal refinement (Z-retry) mode.");
@@ -787,36 +827,41 @@ void MissionFsmNode::on_state_enter(MissionState state) {
     RCLCPP_INFO(this->get_logger(),
                 "Returning to start position: [%.2f, %.2f, %.2f] using PLANNER",
                 start_position_.x, start_position_.y, takeoff_altitude_);
-    
+
     // Use the planner to find a safe path back, instead of blind trajectory
     {
-        geometry_msgs::msg::PoseStamped return_goal_msg;
-        return_goal_msg.header.stamp = this->now();
-        return_goal_msg.header.frame_id = "world";
-        return_goal_msg.pose.position.x = start_position_.x;
-        return_goal_msg.pose.position.y = start_position_.y;
-        return_goal_msg.pose.position.z = takeoff_altitude_; // Maintain altitude for return
-        return_goal_msg.pose.orientation.w = 1.0;
-        
-        if (planner_type_ == "A_star") {
-          planner_goal_pub_a_->publish(return_goal_msg);
-        } else {
-          planner_goal_pub_->publish(return_goal_msg);
-        }
-        
-        current_goal_.x = start_position_.x;
-        current_goal_.y = start_position_.y;
-        current_goal_.z = takeoff_altitude_;
-        goal_set_time_ = this->now();
-        last_pose_at_goal_set_ = current_pose_.position;
-        goal_active_ = true;
+      geometry_msgs::msg::PoseStamped return_goal_msg;
+      return_goal_msg.header.stamp = this->now();
+      return_goal_msg.header.frame_id = "world";
+      return_goal_msg.pose.position.x = start_position_.x;
+      return_goal_msg.pose.position.y = start_position_.y;
+      return_goal_msg.pose.position.z =
+          takeoff_altitude_; // Maintain altitude for return
+      return_goal_msg.pose.orientation.w = 1.0;
+
+      if (planner_type_ == "A_star") {
+        planner_goal_pub_a_->publish(return_goal_msg);
+      } else {
+        planner_goal_pub_->publish(return_goal_msg);
+      }
+
+      current_goal_.x = start_position_.x;
+      current_goal_.y = start_position_.y;
+      current_goal_.z = takeoff_altitude_;
+      goal_set_time_ = this->now();
+      last_pose_at_goal_set_ = current_pose_.position;
+      goal_active_ = true;
     }
     break;
 
   case MissionState::LAND:
     RCLCPP_INFO(this->get_logger(), "Landing...");
-    publish_trajectory_goal(current_pose_.position.x, current_pose_.position.y,
-                            0.0);
+    // We land at the start position, not the current position
+    // We do this using the trajectory goal publisher, so we can get the drone
+    // to land at the start position Just to skip all the path planning for
+    // going back from entrance to start position
+    publish_trajectory_goal(start_position_.x, start_position_.y,
+                            start_position_.z);
     goal_active_ = true;
     break;
 
@@ -901,17 +946,20 @@ void MissionFsmNode::update_state() {
     if (returning_to_entrance_via_travel_) {
       // Mission-complete return corridor: keep only travel-to-entrance logic
       // and skip all exploration-node decision machinery.
-      if (!goal_active_ && !goal_request_pending_ &&
-          macroplanning_enabled_ && travel_mode_ && !travel_path_.empty()) {
+      if (!goal_active_ && !goal_request_pending_ && macroplanning_enabled_ &&
+          travel_mode_ && !travel_path_.empty()) {
         const int next_node_id = travel_path_.front();
         if (graph_nodes_.count(next_node_id) > 0) {
           RCLCPP_INFO(this->get_logger(),
-                      "Mission-complete return: traversing checkpoint node %d toward entrance.",
+                      "Mission-complete return: traversing checkpoint node %d "
+                      "toward entrance.",
                       next_node_id);
-          if (!try_activate_exploration_goal(graph_nodes_.at(next_node_id).position,
-                                             true, GoalSource::TRAVEL, -1)) {
+          if (!try_activate_exploration_goal(
+                  graph_nodes_.at(next_node_id).position, true,
+                  GoalSource::TRAVEL, -1)) {
             RCLCPP_WARN(this->get_logger(),
-                        "Failed to activate mission-complete return checkpoint %d. Skipping node.",
+                        "Failed to activate mission-complete return checkpoint "
+                        "%d. Skipping node.",
                         next_node_id);
             clear_node_relocation_state(next_node_id);
             travel_path_.pop_front();
@@ -927,23 +975,22 @@ void MissionFsmNode::update_state() {
         }
       }
 
-      const double entrance_dist = calculate_distance(current_pose_.position, cave_entrance_);
+      const double entrance_dist =
+          calculate_distance(current_pose_.position, cave_entrance_);
       if ((!travel_mode_ || travel_path_.empty()) && !goal_active_ &&
           entrance_dist <= GOAL_REACHED_THRESHOLD) {
-        RCLCPP_INFO(this->get_logger(),
-                    "Mission-complete return reached cave entrance. Transitioning to RETURN.");
+        RCLCPP_INFO(this->get_logger(), "Mission-complete return reached cave "
+                                        "entrance. Transitioning to RETURN.");
         returning_to_entrance_via_travel_ = false;
         transition_to(MissionState::RETURN);
       }
-      break;
     }
 
     if (macroplanning_enabled_) {
       const double potential_prune_radius =
-          (active_goal_source_ == GoalSource::POTENTIAL)
-              ? node_radius_
-              : 10.0;
-      prune_potential_nodes_near(current_pose_.position, potential_prune_radius);
+          (active_goal_source_ == GoalSource::POTENTIAL) ? node_radius_ : 10.0;
+      prune_potential_nodes_near(current_pose_.position,
+                                 potential_prune_radius);
       update_checkpoint_graph();
       update_mode_decision();
 
@@ -951,15 +998,16 @@ void MissionFsmNode::update_state() {
           graph_nodes_.count(single_edge_priority_target_node_id_) > 0) {
         const int reached_leaf_id = single_edge_priority_target_node_id_;
         const double d_target = calculate_distance(
-            current_pose_.position,
-            graph_nodes_.at(reached_leaf_id).position);
+            current_pose_.position, graph_nodes_.at(reached_leaf_id).position);
         if (d_target <= single_edge_priority_reached_radius_) {
-          RCLCPP_INFO(this->get_logger(),
-                      "Reached single-edge priority node radius (%.2f m <= %.2f m).",
-                      d_target, single_edge_priority_reached_radius_);
+          RCLCPP_INFO(
+              this->get_logger(),
+              "Reached single-edge priority node radius (%.2f m <= %.2f m).",
+              d_target, single_edge_priority_reached_radius_);
 
           if (!graph_nodes_.at(reached_leaf_id).edges.empty()) {
-            const int predecessor_id = *graph_nodes_.at(reached_leaf_id).edges.begin();
+            const int predecessor_id =
+                *graph_nodes_.at(reached_leaf_id).edges.begin();
             set_single_edge_punishment_target(predecessor_id);
           }
 
@@ -968,10 +1016,12 @@ void MissionFsmNode::update_state() {
       }
     }
 
-    // Check if we've found all lanterns
-    if (lanterns_found_count_ >= TARGET_LANTERN_COUNT) {
+    // Check if we've found all lanterns (AND we aren't already returning)
+    if (!returning_to_entrance_via_travel_ &&
+        lanterns_found_count_ >= TARGET_LANTERN_COUNT) {
       RCLCPP_INFO(this->get_logger(),
-                  "All %zu lanterns found! Dropping exploration logic and returning to cave entrance via travel mode.",
+                  "All %zu lanterns found! Dropping exploration logic and "
+                  "returning to cave entrance via travel mode.",
                   TARGET_LANTERN_COUNT);
 
       if (goal_active_) {
@@ -991,7 +1041,8 @@ void MissionFsmNode::update_state() {
 
       if (!start_return_to_entrance_via_travel()) {
         RCLCPP_WARN(this->get_logger(),
-                    "Unable to build travel corridor to cave entrance. Falling back to direct RETURN.");
+                    "Unable to build travel corridor to cave entrance. Falling "
+                    "back to direct RETURN.");
         returning_to_entrance_via_travel_ = false;
         transition_to(MissionState::RETURN);
       }
@@ -1019,19 +1070,21 @@ void MissionFsmNode::update_state() {
 
       double dist = calculate_distance(current_pose_.position, current_goal_);
       double time_since_goal_set = (this->now() - goal_set_time_).seconds();
-      
+
       // FIRST: Check if goal reached (most important check - do this first!)
       if (dist < GOAL_REACHED_THRESHOLD) {
         RCLCPP_INFO(this->get_logger(),
                     "Reached exploration goal [%.2f, %.2f, %.2f] "
                     "(distance=%.2f m, took %.1f s). Requesting next goal.",
-                    current_goal_.x, current_goal_.y, current_goal_.z,
-                    dist, time_since_goal_set);
+                    current_goal_.x, current_goal_.y, current_goal_.z, dist,
+                    time_since_goal_set);
 
         // In travel mode, consume the front checkpoint only when we actually
         // reach it (not when activation succeeds). This keeps the queue intact
         // if planning fails and a retry is needed.
-        if (macroplanning_enabled_ && active_goal_source_ == GoalSource::TRAVEL && !travel_path_.empty()) {
+        if (macroplanning_enabled_ &&
+            active_goal_source_ == GoalSource::TRAVEL &&
+            !travel_path_.empty()) {
           const int reached_node_id = travel_path_.front();
           if (graph_nodes_.count(reached_node_id) > 0 &&
               calculate_distance(current_pose_.position,
@@ -1047,9 +1100,11 @@ void MissionFsmNode::update_state() {
             travel_path_.pop_front();
           }
 
-          if (current_node_id_ >= 0 && graph_nodes_.count(current_node_id_) > 0) {
-            const auto degree = graph_nodes_[current_node_id_].edges.size() +
-                                (graph_nodes_[current_node_id_].is_dead_end ? 1 : 0);
+          if (current_node_id_ >= 0 &&
+              graph_nodes_.count(current_node_id_) > 0) {
+            const auto degree =
+                graph_nodes_[current_node_id_].edges.size() +
+                (graph_nodes_[current_node_id_].is_dead_end ? 1 : 0);
             if (degree == 1) {
               travel_mode_ = false;
               travel_path_.clear();
@@ -1063,13 +1118,15 @@ void MissionFsmNode::update_state() {
           }
         }
 
-        if (macroplanning_enabled_ && active_goal_source_ == GoalSource::POTENTIAL) {
+        if (macroplanning_enabled_ &&
+            active_goal_source_ == GoalSource::POTENTIAL) {
           const int anchor_node = active_goal_anchor_node_id_;
           geometry_msgs::msg::Point next_potential_goal;
           if (anchor_node >= 0 &&
               pop_next_potential_for_node(anchor_node, next_potential_goal)) {
             RCLCPP_INFO(this->get_logger(),
-                        "Potential goal reached. Continuing potential-resolution queue for anchor %d.",
+                        "Potential goal reached. Continuing "
+                        "potential-resolution queue for anchor %d.",
                         anchor_node);
             if (try_activate_exploration_goal(next_potential_goal, true,
                                               GoalSource::POTENTIAL,
@@ -1092,7 +1149,8 @@ void MissionFsmNode::update_state() {
         active_goal_anchor_node_id_ = -1;
         potential_objective_timer_active_ = false;
         potential_objective_anchor_node_id_ = -1;
-        consecutive_too_close_rejections_ = 0;  // Reset counter on successful goal completion
+        consecutive_too_close_rejections_ =
+            0; // Reset counter on successful goal completion
         // Loop will trigger new request in next block
       }
       // SECOND: Check for goal timeout - if goal takes too long, abandon it
@@ -1102,9 +1160,9 @@ void MissionFsmNode::update_state() {
                     "Exploration goal timeout (%.1f s > %.1f s). "
                     "Switching to recovery for goal [%.2f, %.2f, %.2f] "
                     "(current distance=%.2f m, threshold=%.2f m).",
-                    time_since_goal_set, GOAL_TIMEOUT_SECONDS,
-                    current_goal_.x, current_goal_.y, current_goal_.z,
-                    dist, GOAL_REACHED_THRESHOLD);
+                    time_since_goal_set, GOAL_TIMEOUT_SECONDS, current_goal_.x,
+                    current_goal_.y, current_goal_.z, dist,
+                    GOAL_REACHED_THRESHOLD);
         start_refine_for_current_goal("goal timeout");
         break;
       }
@@ -1122,8 +1180,7 @@ void MissionFsmNode::update_state() {
         if (anchor_node >= 0 &&
             pop_next_potential_for_node(anchor_node, next_potential_goal) &&
             try_activate_exploration_goal(next_potential_goal, true,
-                                          GoalSource::POTENTIAL,
-                                          anchor_node)) {
+                                          GoalSource::POTENTIAL, anchor_node)) {
           break;
         }
 
@@ -1135,22 +1192,24 @@ void MissionFsmNode::update_state() {
         potential_objective_anchor_node_id_ = -1;
       }
       // THIRD: Check if drone is stuck (not making progress toward goal)
-      else if (time_since_goal_set > STUCK_DETECTION_SECONDS) {  // After 10 seconds, check movement
-        double movement_since_goal = calculate_distance(
-            current_pose_.position, last_pose_at_goal_set_);
-        double progress_toward_goal = calculate_distance(
-            last_pose_at_goal_set_, current_goal_) -
-            dist;  // How much closer we got
+      else if (time_since_goal_set >
+               STUCK_DETECTION_SECONDS) { // After 10 seconds, check movement
+        double movement_since_goal =
+            calculate_distance(current_pose_.position, last_pose_at_goal_set_);
+        double progress_toward_goal =
+            calculate_distance(last_pose_at_goal_set_, current_goal_) -
+            dist; // How much closer we got
 
         const bool travel_owned_goal =
             (active_goal_source_ == GoalSource::TRAVEL ||
              active_goal_source_ == GoalSource::POTENTIAL);
         if (travel_owned_goal && time_since_goal_set > GOAL_TIMEOUT_SECONDS &&
             movement_since_goal < MIN_MOVEMENT_THRESHOLD) {
-          RCLCPP_WARN(this->get_logger(),
-                      "Travel mode stalled for %.1f s with low movement (%.2f m). "
-                      "Falling back to explorer mode until a new node is reached.",
-                      time_since_goal_set, movement_since_goal);
+          RCLCPP_WARN(
+              this->get_logger(),
+              "Travel mode stalled for %.1f s with low movement (%.2f m). "
+              "Falling back to explorer mode until a new node is reached.",
+              time_since_goal_set, movement_since_goal);
           cancel_pub_->publish(std_msgs::msg::Empty());
           goal_active_ = false;
           active_goal_source_ = GoalSource::EXPLORER;
@@ -1164,7 +1223,8 @@ void MissionFsmNode::update_state() {
           break;
         }
 
-        if (!travel_owned_goal && movement_since_goal < MIN_MOVEMENT_THRESHOLD) {
+        if (!travel_owned_goal &&
+            movement_since_goal < MIN_MOVEMENT_THRESHOLD) {
           RCLCPP_WARN(this->get_logger(),
                       "Drone appears stuck (moved only %.2f m in %.1f s, "
                       "distance to goal=%.2f m). "
@@ -1175,8 +1235,8 @@ void MissionFsmNode::update_state() {
           break;
         } else if (progress_toward_goal < MIN_PROGRESS_THRESHOLD &&
                    dist > GOAL_REACHED_THRESHOLD * 2.0) {
-          // Making movement but not toward goal (might be going around obstacle)
-          // Only warn if we're still far from goal
+          // Making movement but not toward goal (might be going around
+          // obstacle) Only warn if we're still far from goal
           RCLCPP_DEBUG(this->get_logger(),
                        "Drone moving (%.2f m) but slow progress toward goal "
                        "(%.2f m closer, %.2f m remaining).",
@@ -1185,13 +1245,15 @@ void MissionFsmNode::update_state() {
       }
     }
 
-    // Recover from request deadlock: if an async goal request remains pending too long,
-    // clear the latch so a fresh request can be issued.
+    // Recover from request deadlock: if an async goal request remains pending
+    // too long, clear the latch so a fresh request can be issued.
     if (goal_request_pending_ && goal_request_timeout_s_ > 0.0) {
-      const double pending_age = (this->now() - goal_request_sent_time_).seconds();
+      const double pending_age =
+          (this->now() - goal_request_sent_time_).seconds();
       if (pending_age > goal_request_timeout_s_) {
         RCLCPP_WARN(this->get_logger(),
-                    "Exploration goal request timed out after %.1f s. Clearing pending latch.",
+                    "Exploration goal request timed out after %.1f s. Clearing "
+                    "pending latch.",
                     pending_age);
         goal_request_pending_ = false;
         ++explorer_request_epoch_;
@@ -1199,14 +1261,16 @@ void MissionFsmNode::update_state() {
       }
     }
 
-    // Detect goal-selection stuck conditions (no active goal and repeated failures)
+    // Detect goal-selection stuck conditions (no active goal and repeated
+    // failures)
     if (!goal_active_) {
       const double time_since_last_success =
           (this->now() - last_successful_exploration_goal_time_).seconds();
       if ((explore_goal_selection_timeout_ > 0.0 &&
            time_since_last_success > explore_goal_selection_timeout_) ||
           (explore_goal_selection_max_failures_ > 0 &&
-           consecutive_goal_request_failures_ >= explore_goal_selection_max_failures_)) {
+           consecutive_goal_request_failures_ >=
+               explore_goal_selection_max_failures_)) {
         RCLCPP_WARN_THROTTLE(
             this->get_logger(), *this->get_clock(), 5000,
             "Exploration goal selection appears stuck "
@@ -1232,10 +1296,11 @@ void MissionFsmNode::update_state() {
               (last_visited_node_id_ == predecessor_id) ||
               is_inside_node(predecessor_id, current_pose_.position);
           if (at_predecessor) {
-            RCLCPP_INFO(this->get_logger(),
-                        "Reached predecessor node %d for single-edge target %d. "
-                        "Releasing travel mode and handing off to explorer priority.",
-                        predecessor_id, single_edge_travel_target_node_id_);
+            RCLCPP_INFO(
+                this->get_logger(),
+                "Reached predecessor node %d for single-edge target %d. "
+                "Releasing travel mode and handing off to explorer priority.",
+                predecessor_id, single_edge_travel_target_node_id_);
             set_single_edge_priority_target(single_edge_travel_target_node_id_);
             travel_mode_ = false;
             travel_path_.clear();
@@ -1250,11 +1315,13 @@ void MissionFsmNode::update_state() {
           RCLCPP_INFO(this->get_logger(),
                       "Travel mode: traversing to checkpoint node %d.",
                       next_node_id);
-          if (!try_activate_exploration_goal(graph_nodes_.at(next_node_id).position,
-                                            true, GoalSource::TRAVEL, -1)) {
-            RCLCPP_WARN(this->get_logger(),
-                        "Failed to activate travel checkpoint node %d. Skipping node.",
-                        next_node_id);
+          if (!try_activate_exploration_goal(
+                  graph_nodes_.at(next_node_id).position, true,
+                  GoalSource::TRAVEL, -1)) {
+            RCLCPP_WARN(
+                this->get_logger(),
+                "Failed to activate travel checkpoint node %d. Skipping node.",
+                next_node_id);
             clear_node_relocation_state(next_node_id);
             travel_path_.pop_front();
             if (travel_path_.empty()) {
@@ -1274,15 +1341,17 @@ void MissionFsmNode::update_state() {
       } else if (macroplanning_enabled_ && potential_resolution_node_id_ >= 0 &&
                  current_node_id_ == potential_resolution_node_id_) {
         geometry_msgs::msg::Point potential_goal;
-        if (pop_next_potential_for_node(potential_resolution_node_id_, potential_goal)) {
+        if (pop_next_potential_for_node(potential_resolution_node_id_,
+                                        potential_goal)) {
           RCLCPP_INFO(this->get_logger(),
                       "Resolving potential node from anchor %d.",
                       potential_resolution_node_id_);
           if (!try_activate_exploration_goal(potential_goal, true,
-                                            GoalSource::POTENTIAL,
-                                            potential_resolution_node_id_)) {
+                                             GoalSource::POTENTIAL,
+                                             potential_resolution_node_id_)) {
             RCLCPP_WARN(this->get_logger(),
-                        "Failed to activate potential goal for anchor %d. Requesting explorer goal.",
+                        "Failed to activate potential goal for anchor %d. "
+                        "Requesting explorer goal.",
                         potential_resolution_node_id_);
             potential_resolution_node_id_ = -1;
           }
@@ -1303,11 +1372,11 @@ void MissionFsmNode::update_state() {
       if (time_since_replan >= replan_interval_s_) {
         replan_current_goal();
       }
-    } else if (goal_active_ &&
-               (active_goal_source_ == GoalSource::TRAVEL ||
-                active_goal_source_ == GoalSource::POTENTIAL)) {
+    } else if (goal_active_ && (active_goal_source_ == GoalSource::TRAVEL ||
+                                active_goal_source_ == GoalSource::POTENTIAL)) {
       RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 3000,
-                            "Macroplanning goal active: keeping single published RRT goal (no periodic replan).");
+                            "Macroplanning goal active: keeping single "
+                            "published RRT goal (no periodic replan).");
     }
     break;
 
@@ -1361,7 +1430,8 @@ void MissionFsmNode::update_state() {
           std::vector<int> provisional_failed_nodes;
           for (const auto &entry : graph_nodes_) {
             if (entry.second.is_provisional &&
-                calculate_distance(entry.second.position, strategic_goal_) <= node_radius_) {
+                calculate_distance(entry.second.position, strategic_goal_) <=
+                    node_radius_) {
               provisional_failed_nodes.push_back(entry.first);
             }
           }
@@ -1393,7 +1463,7 @@ void MissionFsmNode::update_state() {
                     "Reached refined goal [%.2f, %.2f, %.2f] "
                     "(distance=%.2f m). Resuming exploration.",
                     current_goal_.x, current_goal_.y, current_goal_.z, dist);
-        
+
         goal_active_ = false;
         // Success! Return to EXPLORE state to request next goal
         transition_to(MissionState::EXPLORE);
@@ -1411,10 +1481,11 @@ void MissionFsmNode::update_state() {
         double movement_since_goal =
             calculate_distance(current_pose_.position, last_pose_at_goal_set_);
         if (movement_since_goal < MIN_MOVEMENT_THRESHOLD) {
-          RCLCPP_WARN(this->get_logger(),
-                      "Refine goal stalled at altitude %.2f m (moved only %.2f m "
-                      "in %.1f s). Trying next altitude.",
-                      current_goal_.z, movement_since_goal, time_since_goal_set);
+          RCLCPP_WARN(
+              this->get_logger(),
+              "Refine goal stalled at altitude %.2f m (moved only %.2f m "
+              "in %.1f s). Trying next altitude.",
+              current_goal_.z, movement_since_goal, time_since_goal_set);
           cancel_pub_->publish(std_msgs::msg::Empty());
           goal_active_ = false;
         }
@@ -1439,21 +1510,27 @@ void MissionFsmNode::update_state() {
       return_goal.x = start_position_.x;
       return_goal.y = start_position_.y;
       return_goal.z = takeoff_altitude_;
-      
+
       double dist = calculate_distance(current_pose_.position, return_goal);
       if (dist < 2.0) { // Slightly larger threshold for return
-        RCLCPP_INFO(this->get_logger(), "Returned to start position (dist=%.2f)! Landing.", dist);
+        RCLCPP_INFO(this->get_logger(),
+                    "Returned to start position (dist=%.2f)! Landing.", dist);
         transition_to(MissionState::LAND);
       } else {
-         RCLCPP_WARN(this->get_logger(), "Planner finished but drone is %.2f m from start. Landing anyway (emergency).", dist);
-         transition_to(MissionState::LAND);
+        RCLCPP_WARN(this->get_logger(),
+                    "Planner finished but drone is %.2f m from start. Landing "
+                    "anyway (emergency).",
+                    dist);
+        transition_to(MissionState::LAND);
       }
     }
     // Also monitor timeout for return
-    else if ((this->now() - goal_set_time_).seconds() > 120.0) { // 2 minutes max for return
-        RCLCPP_WARN(this->get_logger(), "Return home timed out!");
-        goal_active_ = false; 
-        transition_to(MissionState::LAND); // Land where we are? Or try again? Landing is safer.
+    else if ((this->now() - goal_set_time_).seconds() >
+             120.0) { // 2 minutes max for return
+      RCLCPP_WARN(this->get_logger(), "Return home timed out!");
+      goal_active_ = false;
+      transition_to(MissionState::LAND); // Land where we are? Or try again?
+                                         // Landing is safer.
     }
     break;
 
@@ -1569,15 +1646,15 @@ void MissionFsmNode::replan_current_goal() {
   last_replan_time_ = this->now();
 
   RCLCPP_DEBUG(this->get_logger(),
-               "Replanned path to [%.2f, %.2f, %.2f] via %s",
-               current_goal_.x, current_goal_.y, current_goal_.z,
-               planner_type_.c_str());
+               "Replanned path to [%.2f, %.2f, %.2f] via %s", current_goal_.x,
+               current_goal_.y, current_goal_.z, planner_type_.c_str());
 }
 
 bool MissionFsmNode::waypoint_appears_unreachable(
     const geometry_msgs::msg::Point &waypoint) const {
   for (const auto &obstacle : recent_obstacle_points_) {
-    if (calculate_distance(waypoint, obstacle) <= waypoint_obstacle_clearance_) {
+    if (calculate_distance(waypoint, obstacle) <=
+        waypoint_obstacle_clearance_) {
       return true;
     }
   }
@@ -1591,7 +1668,8 @@ bool MissionFsmNode::monitor_macroplanning_rrt_waypoints() {
   }
 
   while (!active_rrt_waypoints_.empty() &&
-         calculate_distance(current_pose_.position, active_rrt_waypoints_.front()) <=
+         calculate_distance(current_pose_.position,
+                            active_rrt_waypoints_.front()) <=
              GOAL_REACHED_THRESHOLD) {
     active_rrt_waypoints_.pop_front();
   }
@@ -1600,16 +1678,18 @@ bool MissionFsmNode::monitor_macroplanning_rrt_waypoints() {
     return false;
   }
 
-  const geometry_msgs::msg::Point &next_waypoint = active_rrt_waypoints_.front();
+  const geometry_msgs::msg::Point &next_waypoint =
+      active_rrt_waypoints_.front();
   if (!waypoint_appears_unreachable(next_waypoint)) {
     return false;
   }
 
-  RCLCPP_WARN(this->get_logger(),
-              "Detected blocked RRT waypoint [%.2f, %.2f, %.2f] while in %s mode. "
-              "Stopping and replanning current goal.",
-              next_waypoint.x, next_waypoint.y, next_waypoint.z,
-              active_goal_source_ == GoalSource::TRAVEL ? "travel" : "potential");
+  RCLCPP_WARN(
+      this->get_logger(),
+      "Detected blocked RRT waypoint [%.2f, %.2f, %.2f] while in %s mode. "
+      "Stopping and replanning current goal.",
+      next_waypoint.x, next_waypoint.y, next_waypoint.z,
+      active_goal_source_ == GoalSource::TRAVEL ? "travel" : "potential");
 
   cancel_pub_->publish(std_msgs::msg::Empty());
   goal_active_ = false;
@@ -1618,12 +1698,14 @@ bool MissionFsmNode::monitor_macroplanning_rrt_waypoints() {
   const GoalSource source = active_goal_source_;
   const int anchor_node_id = active_goal_anchor_node_id_;
 
-  if (try_activate_exploration_goal(current_goal_, true, source, anchor_node_id)) {
+  if (try_activate_exploration_goal(current_goal_, true, source,
+                                    anchor_node_id)) {
     return true;
   }
 
   RCLCPP_WARN(this->get_logger(),
-              "Failed to reactivate blocked %s goal. Falling back to existing failure handling.",
+              "Failed to reactivate blocked %s goal. Falling back to existing "
+              "failure handling.",
               source == GoalSource::TRAVEL ? "travel" : "potential");
 
   if (source == GoalSource::POTENTIAL) {
@@ -1631,8 +1713,7 @@ bool MissionFsmNode::monitor_macroplanning_rrt_waypoints() {
     if (anchor_node_id >= 0 &&
         pop_next_potential_for_node(anchor_node_id, next_potential_goal) &&
         try_activate_exploration_goal(next_potential_goal, true,
-                                      GoalSource::POTENTIAL,
-                                      anchor_node_id)) {
+                                      GoalSource::POTENTIAL, anchor_node_id)) {
       return true;
     }
 
@@ -1652,7 +1733,8 @@ bool MissionFsmNode::monitor_macroplanning_rrt_waypoints() {
   return false;
 }
 
-void MissionFsmNode::drop_active_potential_objective(const std::string &reason) {
+void MissionFsmNode::drop_active_potential_objective(
+    const std::string &reason) {
   if (active_goal_source_ != GoalSource::POTENTIAL) {
     return;
   }
@@ -1662,8 +1744,7 @@ void MissionFsmNode::drop_active_potential_objective(const std::string &reason) 
 
   RCLCPP_WARN(this->get_logger(),
               "Dropping potential objective [%.2f, %.2f, %.2f] (%s).",
-              dropped_goal.x, dropped_goal.y, dropped_goal.z,
-              reason.c_str());
+              dropped_goal.x, dropped_goal.y, dropped_goal.z, reason.c_str());
 
   cancel_pub_->publish(std_msgs::msg::Empty());
   goal_active_ = false;
@@ -1674,8 +1755,7 @@ void MissionFsmNode::drop_active_potential_objective(const std::string &reason) 
   if (anchor_node >= 0 &&
       pop_next_potential_for_node(anchor_node, next_potential_goal) &&
       try_activate_exploration_goal(next_potential_goal, true,
-                                    GoalSource::POTENTIAL,
-                                    anchor_node)) {
+                                    GoalSource::POTENTIAL, anchor_node)) {
     return;
   }
 
@@ -1860,10 +1940,9 @@ void MissionFsmNode::start_refine_for_current_goal(const std::string &reason) {
     suppress_rule_l_ = true;
   }
 
-  RCLCPP_WARN(this->get_logger(),
-              "Triggering REFINE_GOAL for [%.2f, %.2f, %.2f] (%s).",
-              strategic_goal_.x, strategic_goal_.y, strategic_goal_.z,
-              reason.c_str());
+  RCLCPP_WARN(
+      this->get_logger(), "Triggering REFINE_GOAL for [%.2f, %.2f, %.2f] (%s).",
+      strategic_goal_.x, strategic_goal_.y, strategic_goal_.z, reason.c_str());
   transition_to(MissionState::REFINE_GOAL);
 }
 
@@ -1898,7 +1977,8 @@ void MissionFsmNode::suspend_explorer_mode_for_travel() {
   // explicitly flush downstream execution regardless of local source flags.
   if (goal_active_ && active_goal_source_ == GoalSource::EXPLORER) {
     RCLCPP_INFO(this->get_logger(),
-                "Dismissing active explorer goal [%.2f, %.2f, %.2f] while entering travel mode.",
+                "Dismissing active explorer goal [%.2f, %.2f, %.2f] while "
+                "entering travel mode.",
                 current_goal_.x, current_goal_.y, current_goal_.z);
     // Treat as intentionally completed/closed so watchdog bookkeeping does not
     // consider this an unfinished explorer goal.
@@ -1929,8 +2009,9 @@ void MissionFsmNode::suspend_explorer_mode_for_travel() {
   ++explorer_request_epoch_;
   explorer_mode_suspended_for_travel_ = true;
 
-  RCLCPP_INFO(this->get_logger(),
-              "Macroplanning travel mode engaged: explorer goaling state fully reset.");
+  RCLCPP_INFO(
+      this->get_logger(),
+      "Macroplanning travel mode engaged: explorer goaling state fully reset.");
 }
 
 void MissionFsmNode::resume_explorer_mode_after_travel() {
@@ -1940,12 +2021,11 @@ void MissionFsmNode::resume_explorer_mode_after_travel() {
 
   const bool travel_still_leading =
       travel_mode_ ||
-      (goal_active_ &&
-       (active_goal_source_ == GoalSource::TRAVEL ||
-        active_goal_source_ == GoalSource::POTENTIAL));
+      (goal_active_ && (active_goal_source_ == GoalSource::TRAVEL ||
+                        active_goal_source_ == GoalSource::POTENTIAL));
   if (travel_still_leading) {
-    RCLCPP_DEBUG(this->get_logger(),
-                 "Keeping explorer mode suspended while macroplanning travel still leads.");
+    RCLCPP_DEBUG(this->get_logger(), "Keeping explorer mode suspended while "
+                                     "macroplanning travel still leads.");
     return;
   }
 
@@ -1965,15 +2045,15 @@ void MissionFsmNode::resume_explorer_mode_after_travel() {
   explorer_mode_suspended_for_travel_ = false;
 }
 
-bool MissionFsmNode::try_activate_exploration_goal(const geometry_msgs::msg::Point &goal,
-                                                   bool allow_close_goal,
-                                                   GoalSource source,
-                                                   int anchor_node_id) {
+bool MissionFsmNode::try_activate_exploration_goal(
+    const geometry_msgs::msg::Point &goal, bool allow_close_goal,
+    GoalSource source, int anchor_node_id) {
   if (source != GoalSource::EXPLORER) {
     reset_explorer_filters_on_next_goal_ = true;
   } else if (reset_explorer_filters_on_next_goal_) {
     RCLCPP_INFO(this->get_logger(),
-                "Returning to explorer goaling after macroplanning mode. Resetting exploration-goal filters.");
+                "Returning to explorer goaling after macroplanning mode. "
+                "Resetting exploration-goal filters.");
     reset_explorer_goal_filters();
     reset_explorer_filters_on_next_goal_ = false;
   }
@@ -1992,12 +2072,14 @@ bool MissionFsmNode::try_activate_exploration_goal(const geometry_msgs::msg::Poi
   planner_goal.pose.position.z = z_retry_altitudes_[z_retry_index_++];
   planner_goal.pose.orientation.w = 1.0;
 
-  double goal_dist = std::hypot(planner_goal.pose.position.x - current_pose_.position.x,
-                                planner_goal.pose.position.y - current_pose_.position.y);
+  double goal_dist =
+      std::hypot(planner_goal.pose.position.x - current_pose_.position.x,
+                 planner_goal.pose.position.y - current_pose_.position.y);
 
   if (!allow_close_goal && goal_dist < min_exploration_goal_distance_) {
     ++consecutive_too_close_rejections_;
-    if (consecutive_too_close_rejections_ < MAX_CONSECUTIVE_TOO_CLOSE_REJECTIONS) {
+    if (consecutive_too_close_rejections_ <
+        MAX_CONSECUTIVE_TOO_CLOSE_REJECTIONS) {
       RCLCPP_WARN(this->get_logger(),
                   "Exploration goal too close (%.2f m < %.2f m). "
                   "Rejecting (consecutive rejections: %d/%d).",
@@ -2007,11 +2089,12 @@ bool MissionFsmNode::try_activate_exploration_goal(const geometry_msgs::msg::Poi
       return false;
     }
 
-    RCLCPP_WARN(this->get_logger(),
-                "Exploration goal too close (%.2f m < %.2f m), but accepting anyway "
-                "after %d consecutive rejections to avoid deadlock.",
-                goal_dist, min_exploration_goal_distance_,
-                consecutive_too_close_rejections_);
+    RCLCPP_WARN(
+        this->get_logger(),
+        "Exploration goal too close (%.2f m < %.2f m), but accepting anyway "
+        "after %d consecutive rejections to avoid deadlock.",
+        goal_dist, min_exploration_goal_distance_,
+        consecutive_too_close_rejections_);
     consecutive_too_close_rejections_ = 0;
   } else {
     consecutive_too_close_rejections_ = 0;
@@ -2022,7 +2105,8 @@ bool MissionFsmNode::try_activate_exploration_goal(const geometry_msgs::msg::Poi
   goal_set_time_ = this->now();
   last_pose_at_goal_set_ = current_pose_.position;
 
-  if (travel_mode_ || source == GoalSource::POTENTIAL || source == GoalSource::TRAVEL) {
+  if (travel_mode_ || source == GoalSource::POTENTIAL ||
+      source == GoalSource::TRAVEL) {
     planner_goal_pub_->publish(planner_goal);
   } else if (planner_type_ == "A_star") {
     planner_goal_pub_a_->publish(planner_goal);
@@ -2038,9 +2122,9 @@ bool MissionFsmNode::try_activate_exploration_goal(const geometry_msgs::msg::Poi
         potential_objective_timer_active_ &&
         potential_objective_anchor_node_id_ == anchor_node_id;
     const bool same_goal =
-        same_anchor &&
-        calculate_distance(potential_objective_goal_, planner_goal.pose.position) <=
-            GOAL_REACHED_THRESHOLD;
+        same_anchor && calculate_distance(potential_objective_goal_,
+                                          planner_goal.pose.position) <=
+                           GOAL_REACHED_THRESHOLD;
     if (!same_goal) {
       potential_objective_start_time_ = this->now();
       potential_objective_goal_ = planner_goal.pose.position;
@@ -2052,11 +2136,11 @@ bool MissionFsmNode::try_activate_exploration_goal(const geometry_msgs::msg::Poi
     potential_objective_anchor_node_id_ = -1;
   }
 
-  RCLCPP_INFO(
-      this->get_logger(),
-      "Navigating to exploration goal via planner: [%.2f, %.2f, %.2f] (distance=%.2f m)",
-      planner_goal.pose.position.x, planner_goal.pose.position.y,
-      planner_goal.pose.position.z, goal_dist);
+  RCLCPP_INFO(this->get_logger(),
+              "Navigating to exploration goal via planner: [%.2f, %.2f, %.2f] "
+              "(distance=%.2f m)",
+              planner_goal.pose.position.x, planner_goal.pose.position.y,
+              planner_goal.pose.position.z, goal_dist);
 
   return true;
 }
@@ -2089,15 +2173,17 @@ void MissionFsmNode::request_exploration_goal() {
   // Async call with callback
   exploration_goal_client_->async_send_request(
       request,
-      [this, request_epoch](rclcpp::Client<exploring::srv::GetExplorationGoal>::SharedFuture
-                 future) {
+      [this, request_epoch](
+          rclcpp::Client<exploring::srv::GetExplorationGoal>::SharedFuture
+              future) {
         // Clear flag when response received
         goal_request_pending_ = false;
 
         if (request_epoch != explorer_request_epoch_ ||
             explorer_mode_suspended_for_travel_) {
           RCLCPP_DEBUG(this->get_logger(),
-                       "Discarding stale exploration goal response (epoch mismatch or explorer suspended).");
+                       "Discarding stale exploration goal response (epoch "
+                       "mismatch or explorer suspended).");
           return;
         }
 
@@ -2115,7 +2201,8 @@ void MissionFsmNode::request_exploration_goal() {
         if (!response->success) {
           RCLCPP_WARN(this->get_logger(), "Exploration goal request failed: %s",
                       response->message.c_str());
-          // Track consecutive failures so EXPLORE can detect goal-selection issues
+          // Track consecutive failures so EXPLORE can detect goal-selection
+          // issues
           ++consecutive_goal_request_failures_;
           return;
         }
@@ -2125,9 +2212,9 @@ void MissionFsmNode::request_exploration_goal() {
             potential_resolution_node_id_ >= 0 ||
             active_goal_source_ == GoalSource::TRAVEL ||
             active_goal_source_ == GoalSource::POTENTIAL) {
-          RCLCPP_DEBUG(
-              this->get_logger(),
-              "Ignoring exploration goal - EXPLORE no longer owns command chain.");
+          RCLCPP_DEBUG(this->get_logger(),
+                       "Ignoring exploration goal - EXPLORE no longer owns "
+                       "command chain.");
           return;
         }
 
@@ -2156,8 +2243,8 @@ void MissionFsmNode::request_exploration_goal() {
       });
 }
 
-
-bool MissionFsmNode::is_inside_node(int node_id, const geometry_msgs::msg::Point &pos) const {
+bool MissionFsmNode::is_inside_node(
+    int node_id, const geometry_msgs::msg::Point &pos) const {
   const auto it = graph_nodes_.find(node_id);
   if (it == graph_nodes_.end()) {
     return false;
@@ -2166,7 +2253,8 @@ bool MissionFsmNode::is_inside_node(int node_id, const geometry_msgs::msg::Point
                     it->second.position.y - pos.y) <= node_radius_;
 }
 
-std::optional<int> MissionFsmNode::find_node_containing_position(const geometry_msgs::msg::Point &pos) const {
+std::optional<int> MissionFsmNode::find_node_containing_position(
+    const geometry_msgs::msg::Point &pos) const {
   int closest_id = -1;
   double closest_dist = std::numeric_limits<double>::max();
   for (const auto &entry : graph_nodes_) {
@@ -2185,7 +2273,8 @@ std::optional<int> MissionFsmNode::find_node_containing_position(const geometry_
   return closest_id;
 }
 
-int MissionFsmNode::create_checkpoint_node(const geometry_msgs::msg::Point &pos, bool is_entrance,
+int MissionFsmNode::create_checkpoint_node(const geometry_msgs::msg::Point &pos,
+                                           bool is_entrance,
                                            bool is_provisional) {
   int nearest_existing_id = -1;
   double nearest_existing_dist = std::numeric_limits<double>::max();
@@ -2276,28 +2365,30 @@ void MissionFsmNode::remove_checkpoint_node(int node_id) {
     potential_resolution_node_id_ = -1;
   }
 
-  travel_path_.erase(std::remove(travel_path_.begin(), travel_path_.end(), node_id),
-                     travel_path_.end());
+  travel_path_.erase(
+      std::remove(travel_path_.begin(), travel_path_.end(), node_id),
+      travel_path_.end());
   clear_node_relocation_state(node_id);
   graph_nodes_.erase(node_id);
 }
 
-void MissionFsmNode::prune_potential_nodes_near(const geometry_msgs::msg::Point &pos, double radius) {
+void MissionFsmNode::prune_potential_nodes_near(
+    const geometry_msgs::msg::Point &pos, double radius) {
   for (auto &entry : graph_nodes_) {
     auto &pots = entry.second.potentials;
     pots.erase(std::remove_if(pots.begin(), pots.end(),
                               [&](const PotentialNode &pot) {
                                 return !pot.unreachable &&
-                                       calculate_distance(pos, pot.position) <= radius;
+                                       calculate_distance(pos, pot.position) <=
+                                           radius;
                               }),
                pots.end());
   }
 }
 
-
-double MissionFsmNode::point_to_segment_distance(const geometry_msgs::msg::Point &p,
-                                                 const geometry_msgs::msg::Point &a,
-                                                 const geometry_msgs::msg::Point &b) const {
+double MissionFsmNode::point_to_segment_distance(
+    const geometry_msgs::msg::Point &p, const geometry_msgs::msg::Point &a,
+    const geometry_msgs::msg::Point &b) const {
   const double abx = b.x - a.x;
   const double aby = b.y - a.y;
   const double abz = b.z - a.z;
@@ -2310,7 +2401,8 @@ double MissionFsmNode::point_to_segment_distance(const geometry_msgs::msg::Point
     return calculate_distance(p, a);
   }
 
-  const double t = std::clamp((apx * abx + apy * aby + apz * abz) / ab_len_sq, 0.0, 1.0);
+  const double t =
+      std::clamp((apx * abx + apy * aby + apz * abz) / ab_len_sq, 0.0, 1.0);
   geometry_msgs::msg::Point projection;
   projection.x = a.x + t * abx;
   projection.y = a.y + t * aby;
@@ -2318,9 +2410,9 @@ double MissionFsmNode::point_to_segment_distance(const geometry_msgs::msg::Point
   return calculate_distance(p, projection);
 }
 
-double MissionFsmNode::projection_parameter_on_segment(const geometry_msgs::msg::Point &p,
-                                                       const geometry_msgs::msg::Point &a,
-                                                       const geometry_msgs::msg::Point &b) const {
+double MissionFsmNode::projection_parameter_on_segment(
+    const geometry_msgs::msg::Point &p, const geometry_msgs::msg::Point &a,
+    const geometry_msgs::msg::Point &b) const {
   const double abx = b.x - a.x;
   const double aby = b.y - a.y;
   const double abz = b.z - a.z;
@@ -2370,7 +2462,8 @@ void MissionFsmNode::fuse_nearby_checkpoint_nodes() {
     for (size_t j = i + 1; j < node_ids.size(); ++j) {
       const int a = node_ids[i];
       const int b = node_ids[j];
-      if (calculate_distance(graph_nodes_.at(a).position, graph_nodes_.at(b).position) <= node_radius_) {
+      if (calculate_distance(graph_nodes_.at(a).position,
+                             graph_nodes_.at(b).position) <= node_radius_) {
         unite(a, b);
       }
     }
@@ -2391,7 +2484,8 @@ void MissionFsmNode::fuse_nearby_checkpoint_nodes() {
     }
 
     int representative = members.front();
-    if (std::find(members.begin(), members.end(), entrance_node_id_) != members.end()) {
+    if (std::find(members.begin(), members.end(), entrance_node_id_) !=
+        members.end()) {
       representative = entrance_node_id_;
     }
 
@@ -2412,7 +2506,8 @@ void MissionFsmNode::fuse_nearby_checkpoint_nodes() {
       sz += node.position.z;
       any_dead_end = any_dead_end || node.is_dead_end;
       any_non_provisional = any_non_provisional || !node.is_provisional;
-      merged_potentials.insert(merged_potentials.end(), node.potentials.begin(), node.potentials.end());
+      merged_potentials.insert(merged_potentials.end(), node.potentials.begin(),
+                               node.potentials.end());
     }
 
     const double inv = 1.0 / static_cast<double>(members.size());
@@ -2425,7 +2520,8 @@ void MissionFsmNode::fuse_nearby_checkpoint_nodes() {
     for (const auto &pot : merged_potentials) {
       bool duplicate = false;
       for (const auto &existing : merged.potentials) {
-        if (calculate_distance(existing.position, pot.position) <= node_radius_) {
+        if (calculate_distance(existing.position, pot.position) <=
+            node_radius_) {
           duplicate = true;
           break;
         }
@@ -2469,7 +2565,8 @@ void MissionFsmNode::fuse_nearby_checkpoint_nodes() {
   for (auto &id : travel_path_) {
     remap_id(id);
   }
-  travel_path_.erase(std::unique(travel_path_.begin(), travel_path_.end()), travel_path_.end());
+  travel_path_.erase(std::unique(travel_path_.begin(), travel_path_.end()),
+                     travel_path_.end());
 
   graph_nodes_ = std::move(rebuilt);
 }
@@ -2482,7 +2579,8 @@ void MissionFsmNode::redistribute_edges_through_nearby_nodes() {
   std::set<std::pair<int, int>> unique_edges;
   for (const auto &entry : graph_nodes_) {
     for (const int neigh : entry.second.edges) {
-      unique_edges.insert({std::min(entry.first, neigh), std::max(entry.first, neigh)});
+      unique_edges.insert(
+          {std::min(entry.first, neigh), std::max(entry.first, neigh)});
     }
   }
 
@@ -2499,13 +2597,13 @@ void MissionFsmNode::redistribute_edges_through_nearby_nodes() {
       if (c == a || c == b) {
         continue;
       }
-      const double dist = point_to_segment_distance(entry.second.position,
-                                                    graph_nodes_.at(a).position,
-                                                    graph_nodes_.at(b).position);
+      const double dist = point_to_segment_distance(
+          entry.second.position, graph_nodes_.at(a).position,
+          graph_nodes_.at(b).position);
       if (dist <= node_radius_) {
-        const double t = projection_parameter_on_segment(entry.second.position,
-                                                         graph_nodes_.at(a).position,
-                                                         graph_nodes_.at(b).position);
+        const double t = projection_parameter_on_segment(
+            entry.second.position, graph_nodes_.at(a).position,
+            graph_nodes_.at(b).position);
         split_nodes.push_back({t, c});
       }
     }
@@ -2514,8 +2612,9 @@ void MissionFsmNode::redistribute_edges_through_nearby_nodes() {
       continue;
     }
 
-    std::sort(split_nodes.begin(), split_nodes.end(),
-              [](const auto &lhs, const auto &rhs) { return lhs.first < rhs.first; });
+    std::sort(
+        split_nodes.begin(), split_nodes.end(),
+        [](const auto &lhs, const auto &rhs) { return lhs.first < rhs.first; });
 
     graph_nodes_[a].edges.erase(b);
     graph_nodes_[b].edges.erase(a);
@@ -2539,7 +2638,8 @@ void MissionFsmNode::simplify_checkpoint_graph() {
   prune_potentials_within_node_distance_recursive();
 }
 
-bool MissionFsmNode::is_potential_valid_global(const geometry_msgs::msg::Point &candidate) const {
+bool MissionFsmNode::is_potential_valid_global(
+    const geometry_msgs::msg::Point &candidate) const {
   for (const auto &entry : graph_nodes_) {
     // "Within node_distance" must include points exactly on the threshold.
     if (xy_distance(entry.second.position, candidate) <= nodes_distance_) {
@@ -2550,12 +2650,14 @@ bool MissionFsmNode::is_potential_valid_global(const geometry_msgs::msg::Point &
   std::set<std::pair<int, int>> unique_edges;
   for (const auto &entry : graph_nodes_) {
     for (const int neigh : entry.second.edges) {
-      unique_edges.insert({std::min(entry.first, neigh), std::max(entry.first, neigh)});
+      unique_edges.insert(
+          {std::min(entry.first, neigh), std::max(entry.first, neigh)});
     }
   }
 
   for (const auto &edge : unique_edges) {
-    if (graph_nodes_.count(edge.first) == 0 || graph_nodes_.count(edge.second) == 0) {
+    if (graph_nodes_.count(edge.first) == 0 ||
+        graph_nodes_.count(edge.second) == 0) {
       continue;
     }
     const auto &from = graph_nodes_.at(edge.first).position;
@@ -2581,16 +2683,19 @@ void MissionFsmNode::prune_potentials_within_node_distance_recursive() {
     node_positions.push_back(entry.second.position);
   }
 
-  std::vector<std::pair<geometry_msgs::msg::Point, geometry_msgs::msg::Point>> edge_segments;
+  std::vector<std::pair<geometry_msgs::msg::Point, geometry_msgs::msg::Point>>
+      edge_segments;
   std::set<std::pair<int, int>> unique_edges;
   for (const auto &entry : graph_nodes_) {
     for (const int neigh : entry.second.edges) {
-      unique_edges.insert({std::min(entry.first, neigh), std::max(entry.first, neigh)});
+      unique_edges.insert(
+          {std::min(entry.first, neigh), std::max(entry.first, neigh)});
     }
   }
   edge_segments.reserve(unique_edges.size());
   for (const auto &edge : unique_edges) {
-    if (graph_nodes_.count(edge.first) == 0 || graph_nodes_.count(edge.second) == 0) {
+    if (graph_nodes_.count(edge.first) == 0 ||
+        graph_nodes_.count(edge.second) == 0) {
       continue;
     }
     edge_segments.push_back({graph_nodes_.at(edge.first).position,
@@ -2599,29 +2704,31 @@ void MissionFsmNode::prune_potentials_within_node_distance_recursive() {
 
   for (auto &anchor_entry : graph_nodes_) {
     auto &potentials = anchor_entry.second.potentials;
-    potentials.erase(std::remove_if(potentials.begin(), potentials.end(),
-                                    [&](const PotentialNode &potential) {
-                                      for (const auto &node_position : node_positions) {
-                                        if (xy_distance(potential.position, node_position) <=
-                                            nodes_distance_) {
-                                          return true;
-                                        }
-                                      }
+    potentials.erase(
+        std::remove_if(potentials.begin(), potentials.end(),
+                       [&](const PotentialNode &potential) {
+                         for (const auto &node_position : node_positions) {
+                           if (xy_distance(potential.position, node_position) <=
+                               nodes_distance_) {
+                             return true;
+                           }
+                         }
 
-                                      for (const auto &edge : edge_segments) {
-                                        if (point_to_segment_distance_xy(
-                                                potential.position, edge.first,
-                                                edge.second) <= nodes_distance_) {
-                                          return true;
-                                        }
-                                      }
-                                      return false;
-                                    }),
-                     potentials.end());
+                         for (const auto &edge : edge_segments) {
+                           if (point_to_segment_distance_xy(
+                                   potential.position, edge.first,
+                                   edge.second) <= nodes_distance_) {
+                             return true;
+                           }
+                         }
+                         return false;
+                       }),
+        potentials.end());
   }
 }
 
-bool MissionFsmNode::is_within_node_distance_of_any_node(const geometry_msgs::msg::Point &pos) const {
+bool MissionFsmNode::is_within_node_distance_of_any_node(
+    const geometry_msgs::msg::Point &pos) const {
   for (const auto &entry : graph_nodes_) {
     if (calculate_distance(pos, entry.second.position) <= nodes_distance_) {
       return true;
@@ -2630,8 +2737,9 @@ bool MissionFsmNode::is_within_node_distance_of_any_node(const geometry_msgs::ms
   return false;
 }
 
-bool MissionFsmNode::find_safer_node_position(const geometry_msgs::msg::Point &center,
-                                              geometry_msgs::msg::Point &safe_out) const {
+bool MissionFsmNode::find_safer_node_position(
+    const geometry_msgs::msg::Point &center,
+    geometry_msgs::msg::Point &safe_out) const {
   if (recent_obstacle_points_.empty()) {
     return false;
   }
@@ -2655,7 +2763,8 @@ bool MissionFsmNode::find_safer_node_position(const geometry_msgs::msg::Point &c
 
   for (double r = kRadiusStep; r <= kMaxSearchRadius + 1e-6; r += kRadiusStep) {
     for (int i = 0; i < kAngleSamples; ++i) {
-      const double theta = 2.0 * kPi * static_cast<double>(i) / static_cast<double>(kAngleSamples);
+      const double theta = 2.0 * kPi * static_cast<double>(i) /
+                           static_cast<double>(kAngleSamples);
       geometry_msgs::msg::Point candidate = center;
       candidate.x += r * std::cos(theta);
       candidate.y += r * std::sin(theta);
@@ -2693,7 +2802,8 @@ bool MissionFsmNode::find_alternate_position_for_node(
   }
   const auto &origin = origin_it->second;
 
-  static constexpr std::array<double, 5> kSearchRadii{{2.0, 4.0, 6.0, 8.0, 10.0}};
+  static constexpr std::array<double, 5> kSearchRadii{
+      {2.0, 4.0, 6.0, 8.0, 10.0}};
   static constexpr int kAngleSamples = 16;
   const double kPi = std::acos(-1.0);
 
@@ -2704,8 +2814,8 @@ bool MissionFsmNode::find_alternate_position_for_node(
   for (int idx = attempt_counter; idx < total_candidates; ++idx) {
     const int radius_idx = idx / kAngleSamples;
     const int angle_idx = idx % kAngleSamples;
-    const double theta =
-        2.0 * kPi * static_cast<double>(angle_idx) / static_cast<double>(kAngleSamples);
+    const double theta = 2.0 * kPi * static_cast<double>(angle_idx) /
+                         static_cast<double>(kAngleSamples);
 
     geometry_msgs::msg::Point candidate = origin;
     candidate.x += kSearchRadii[radius_idx] * std::cos(theta);
@@ -2717,7 +2827,8 @@ bool MissionFsmNode::find_alternate_position_for_node(
       if (entry.first == node_id) {
         continue;
       }
-      if (calculate_distance(candidate, entry.second.position) < node_separation) {
+      if (calculate_distance(candidate, entry.second.position) <
+          node_separation) {
         too_close_to_other_node = true;
         break;
       }
@@ -2741,7 +2852,8 @@ void MissionFsmNode::clear_node_relocation_state(int node_id) {
   node_relocation_attempts_.erase(node_id);
 }
 
-void MissionFsmNode::register_potential_node_for_anchor(const geometry_msgs::msg::Point &candidate) {
+void MissionFsmNode::register_potential_node_for_anchor(
+    const geometry_msgs::msg::Point &candidate) {
   if (current_state_ != MissionState::EXPLORE) {
     return;
   }
@@ -2758,9 +2870,10 @@ void MissionFsmNode::register_potential_node_for_anchor(const geometry_msgs::msg
 
   auto &anchor = graph_nodes_[anchor_id];
   if (anchor.visit_count > 3) {
-    RCLCPP_DEBUG(this->get_logger(),
-                 "Skipping potential registration for node %d: visit_count=%d (>3).",
-                 anchor_id, anchor.visit_count);
+    RCLCPP_DEBUG(
+        this->get_logger(),
+        "Skipping potential registration for node %d: visit_count=%d (>3).",
+        anchor_id, anchor.visit_count);
     return;
   }
 
@@ -2770,7 +2883,8 @@ void MissionFsmNode::register_potential_node_for_anchor(const geometry_msgs::msg
 
   const double candidate_angle = std::atan2(candidate.y - anchor.position.y,
                                             candidate.x - anchor.position.x);
-  const double candidate_radius = calculate_distance(anchor.position, candidate);
+  const double candidate_radius =
+      calculate_distance(anchor.position, candidate);
   const double kPi = std::acos(-1.0);
   auto angle_delta = [kPi](double a, double b) {
     double d = std::fabs(a - b);
@@ -2785,11 +2899,13 @@ void MissionFsmNode::register_potential_node_for_anchor(const geometry_msgs::msg
     if (pot.unreachable) {
       continue;
     }
-    const double existing_angle = std::atan2(pot.position.y - anchor.position.y,
-                                             pot.position.x - anchor.position.x);
-    const double existing_radius = calculate_distance(anchor.position, pot.position);
+    const double existing_angle = std::atan2(
+        pot.position.y - anchor.position.y, pot.position.x - anchor.position.x);
+    const double existing_radius =
+        calculate_distance(anchor.position, pot.position);
     const double delta = angle_delta(candidate_angle, existing_angle);
-    const double angle_threshold = std::clamp(potential_angle_threshold_deg_, 1.0, 179.0) * (kPi / 180.0);
+    const double angle_threshold =
+        std::clamp(potential_angle_threshold_deg_, 1.0, 179.0) * (kPi / 180.0);
     if (delta < angle_threshold) {
       if (candidate_radius > existing_radius) {
         pot.position = candidate;
@@ -2823,7 +2939,8 @@ bool MissionFsmNode::node_has_resolvable_potential(int node_id) const {
   return false;
 }
 
-bool MissionFsmNode::pop_next_potential_for_node(int node_id, geometry_msgs::msg::Point &goal_out) {
+bool MissionFsmNode::pop_next_potential_for_node(
+    int node_id, geometry_msgs::msg::Point &goal_out) {
   auto it = graph_nodes_.find(node_id);
   if (it == graph_nodes_.end()) {
     return false;
@@ -2841,7 +2958,9 @@ bool MissionFsmNode::pop_next_potential_for_node(int node_id, geometry_msgs::msg
   return false;
 }
 
-std::vector<int> MissionFsmNode::compute_shortest_path_nodes(int start_node, int goal_node) const {
+std::vector<int>
+MissionFsmNode::compute_shortest_path_nodes(int start_node,
+                                            int goal_node) const {
   std::queue<int> q;
   std::unordered_map<int, int> parent;
   q.push(start_node);
@@ -2907,7 +3026,8 @@ void MissionFsmNode::update_checkpoint_graph() {
   const auto containing = find_node_containing_position(current_pose_.position);
   current_node_id_ = containing.value_or(-1);
 
-  // Bootstrap phase: keep graph logic disabled until we have entrance + one in-cave node.
+  // Bootstrap phase: keep graph logic disabled until we have entrance + one
+  // in-cave node.
   if (graph_nodes_.size() < 2) {
     travel_mode_ = false;
     potential_resolution_node_id_ = -1;
@@ -2923,8 +3043,8 @@ void MissionFsmNode::update_checkpoint_graph() {
       }
 
       if (last_visited_node_id_ == entrance_node_id_ && current_node_id_ < 0) {
-        const double d = calculate_distance(graph_nodes_[entrance_node_id_].position,
-                                            current_pose_.position);
+        const double d = calculate_distance(
+            graph_nodes_[entrance_node_id_].position, current_pose_.position);
         if (d >= nodes_distance_ &&
             !is_within_node_distance_of_any_node(current_pose_.position)) {
           geometry_msgs::msg::Point node_candidate = current_pose_.position;
@@ -2943,13 +3063,15 @@ void MissionFsmNode::update_checkpoint_graph() {
     return;
   }
 
-  const bool entered_node = (current_node_id_ >= 0 && current_node_id_ != previous_node_id_);
+  const bool entered_node =
+      (current_node_id_ >= 0 && current_node_id_ != previous_node_id_);
   const bool inside_any_node = (current_node_id_ >= 0);
 
   // Always run core graph processing while inside a node. Restrict
   // edge-creation and rule-L entry semantics to true node transitions.
   if (inside_any_node) {
-    if (last_visited_node_id_ >= 0 && last_visited_node_id_ != current_node_id_) {
+    if (last_visited_node_id_ >= 0 &&
+        last_visited_node_id_ != current_node_id_) {
       if (entered_node) {
         add_edge_between_nodes(last_visited_node_id_, current_node_id_);
       }
@@ -2960,9 +3082,11 @@ void MissionFsmNode::update_checkpoint_graph() {
     prune_potentials_within_node_distance_recursive();
     simplify_checkpoint_graph();
 
-    const auto remapped_containing = find_node_containing_position(current_pose_.position);
+    const auto remapped_containing =
+        find_node_containing_position(current_pose_.position);
     current_node_id_ = remapped_containing.value_or(current_node_id_);
-    if (last_visited_node_id_ >= 0 && graph_nodes_.count(last_visited_node_id_) == 0) {
+    if (last_visited_node_id_ >= 0 &&
+        graph_nodes_.count(last_visited_node_id_) == 0) {
       last_visited_node_id_ = current_node_id_;
     }
 
@@ -2986,11 +3110,13 @@ void MissionFsmNode::update_checkpoint_graph() {
               potential_resolution_node_id_ = -1;
             }
             RCLCPP_INFO(this->get_logger(),
-                        "Node %d re-entered without potentials. Reclassifying as dead-end.",
+                        "Node %d re-entered without potentials. Reclassifying "
+                        "as dead-end.",
                         current_node_id_);
           } else {
             RCLCPP_DEBUG(this->get_logger(),
-                         "Node %d re-entered with available potentials. Keeping explorer behavior unchanged.",
+                         "Node %d re-entered with available potentials. "
+                         "Keeping explorer behavior unchanged.",
                          current_node_id_);
           }
         }
@@ -3008,9 +3134,10 @@ void MissionFsmNode::update_checkpoint_graph() {
     }
   }
 
-  if (current_node_id_ < 0 && last_visited_node_id_ >= 0 && graph_nodes_.count(last_visited_node_id_) > 0) {
-    const double d = calculate_distance(graph_nodes_[last_visited_node_id_].position,
-                                        current_pose_.position);
+  if (current_node_id_ < 0 && last_visited_node_id_ >= 0 &&
+      graph_nodes_.count(last_visited_node_id_) > 0) {
+    const double d = calculate_distance(
+        graph_nodes_[last_visited_node_id_].position, current_pose_.position);
     if (d >= nodes_distance_ &&
         !is_within_node_distance_of_any_node(current_pose_.position)) {
       geometry_msgs::msg::Point node_candidate = current_pose_.position;
@@ -3027,9 +3154,11 @@ void MissionFsmNode::update_checkpoint_graph() {
     }
   }
 
-  if (last_visited_node_id_ >= 0 && graph_nodes_.count(last_visited_node_id_) > 0 &&
+  if (last_visited_node_id_ >= 0 &&
+      graph_nodes_.count(last_visited_node_id_) > 0 &&
       latest_seen_point_valid_ &&
-      (this->now() - latest_seen_point_stamp_).seconds() <= seen_point_timeout_s_) {
+      (this->now() - latest_seen_point_stamp_).seconds() <=
+          seen_point_timeout_s_) {
     register_potential_node_for_anchor(latest_seen_point_);
   }
 }
@@ -3052,7 +3181,8 @@ bool MissionFsmNode::start_return_to_entrance_via_travel() {
   int start_node = -1;
   if (current_node_id_ >= 0 && graph_nodes_.count(current_node_id_) > 0) {
     start_node = current_node_id_;
-  } else if (last_visited_node_id_ >= 0 && graph_nodes_.count(last_visited_node_id_) > 0) {
+  } else if (last_visited_node_id_ >= 0 &&
+             graph_nodes_.count(last_visited_node_id_) > 0) {
     start_node = last_visited_node_id_;
   }
 
@@ -3087,7 +3217,8 @@ bool MissionFsmNode::start_return_to_entrance_via_travel() {
   }
 
   RCLCPP_INFO(this->get_logger(),
-              "Mission-complete return corridor activated: node %d -> entrance node %d (%zu checkpoints).",
+              "Mission-complete return corridor activated: node %d -> entrance "
+              "node %d (%zu checkpoints).",
               start_node, entrance_node_id_, travel_path_.size());
   return true;
 }
@@ -3105,7 +3236,8 @@ void MissionFsmNode::update_mode_decision() {
         (current_node_id_ >= 0 && current_node_id_ != fallback_origin_node_id_);
     const bool fallback_timed_out =
         (force_explorer_timeout_s_ > 0.0) &&
-        ((this->now() - force_explorer_start_time_).seconds() > force_explorer_timeout_s_);
+        ((this->now() - force_explorer_start_time_).seconds() >
+         force_explorer_timeout_s_);
     if (!reached_new_node && !fallback_timed_out) {
       travel_mode_ = false;
       potential_resolution_node_id_ = -1;
@@ -3115,14 +3247,16 @@ void MissionFsmNode::update_mode_decision() {
     }
     if (fallback_timed_out && !reached_new_node) {
       RCLCPP_WARN(this->get_logger(),
-                  "Forced explorer fallback timed out after %.1f s. Re-enabling macroplanning travel decisions.",
+                  "Forced explorer fallback timed out after %.1f s. "
+                  "Re-enabling macroplanning travel decisions.",
                   force_explorer_timeout_s_);
     }
     force_explorer_until_new_node_ = false;
     fallback_origin_node_id_ = -1;
   }
 
-  if (last_visited_node_id_ < 0 || graph_nodes_.count(last_visited_node_id_) == 0 ||
+  if (last_visited_node_id_ < 0 ||
+      graph_nodes_.count(last_visited_node_id_) == 0 ||
       graph_nodes_.size() < 2) {
     travel_mode_ = false;
     potential_resolution_node_id_ = -1;
@@ -3138,7 +3272,8 @@ void MissionFsmNode::update_mode_decision() {
     if (entry.first == entrance_node_id_) {
       continue;
     }
-    const auto degree = entry.second.edges.size() + (entry.second.is_dead_end ? 1 : 0);
+    const auto degree =
+        entry.second.edges.size() + (entry.second.is_dead_end ? 1 : 0);
     if (degree == 1) {
       single_edge_nodes.push_back(entry.first);
     }
@@ -3146,7 +3281,8 @@ void MissionFsmNode::update_mode_decision() {
 
   if (single_edge_nodes.empty()) {
     clear_single_edge_priority_target();
-    const int start_node = (current_node_id_ >= 0) ? current_node_id_ : last_visited_node_id_;
+    const int start_node =
+        (current_node_id_ >= 0) ? current_node_id_ : last_visited_node_id_;
     if (start_node < 0 || graph_nodes_.count(start_node) == 0) {
       travel_mode_ = false;
       potential_resolution_node_id_ = -1;
@@ -3161,7 +3297,8 @@ void MissionFsmNode::update_mode_decision() {
       }
       double metric = 0.0;
       for (size_t i = 1; i < path.size(); ++i) {
-        if (graph_nodes_.count(path[i - 1]) == 0 || graph_nodes_.count(path[i]) == 0) {
+        if (graph_nodes_.count(path[i - 1]) == 0 ||
+            graph_nodes_.count(path[i]) == 0) {
           return std::numeric_limits<double>::max();
         }
         metric += calculate_distance(graph_nodes_.at(path[i - 1]).position,
@@ -3183,8 +3320,8 @@ void MissionFsmNode::update_mode_decision() {
         selected_potential_node = start_node;
         selected_path = {start_node};
       } else {
-        auto candidate_path =
-            compute_shortest_path_nodes(start_node, potential_resolution_node_id_);
+        auto candidate_path = compute_shortest_path_nodes(
+            start_node, potential_resolution_node_id_);
         if (!candidate_path.empty()) {
           selected_potential_node = potential_resolution_node_id_;
           selected_path = std::move(candidate_path);
@@ -3255,11 +3392,18 @@ void MissionFsmNode::update_mode_decision() {
   }
 
   potential_resolution_node_id_ = -1;
-  const bool in_node_with_one_edge = (current_node_id_ >= 0 && current_node_id_ != entrance_node_id_ && graph_nodes_.count(current_node_id_) > 0 &&
-                                      (graph_nodes_[current_node_id_].edges.size() + (graph_nodes_[current_node_id_].is_dead_end ? 1 : 0) == 1));
+  const bool in_node_with_one_edge =
+      (current_node_id_ >= 0 && current_node_id_ != entrance_node_id_ &&
+       graph_nodes_.count(current_node_id_) > 0 &&
+       (graph_nodes_[current_node_id_].edges.size() +
+            (graph_nodes_[current_node_id_].is_dead_end ? 1 : 0) ==
+        1));
   const bool outside_node = (current_node_id_ < 0);
-  const bool last_has_one_edge = (last_visited_node_id_ != entrance_node_id_ &&
-                                (graph_nodes_[last_visited_node_id_].edges.size() + (graph_nodes_[last_visited_node_id_].is_dead_end ? 1 : 0) == 1));
+  const bool last_has_one_edge =
+      (last_visited_node_id_ != entrance_node_id_ &&
+       (graph_nodes_[last_visited_node_id_].edges.size() +
+            (graph_nodes_[last_visited_node_id_].is_dead_end ? 1 : 0) ==
+        1));
 
   if (outside_node && last_has_one_edge && !was_travel_mode) {
     travel_mode_ = false;
@@ -3268,27 +3412,38 @@ void MissionFsmNode::update_mode_decision() {
     return;
   }
 
-  const int direction_anchor_node_id = (in_node_with_one_edge) ? current_node_id_ : last_visited_node_id_;
+  const int direction_anchor_node_id =
+      (in_node_with_one_edge) ? current_node_id_ : last_visited_node_id_;
   geometry_msgs::msg::Point preferred_direction;
-  preferred_direction.x = current_pose_.position.x - graph_nodes_[direction_anchor_node_id].position.x;
-  preferred_direction.y = current_pose_.position.y - graph_nodes_[direction_anchor_node_id].position.y;
-  preferred_direction.z = current_pose_.position.z - graph_nodes_[direction_anchor_node_id].position.z;
+  preferred_direction.x = current_pose_.position.x -
+                          graph_nodes_[direction_anchor_node_id].position.x;
+  preferred_direction.y = current_pose_.position.y -
+                          graph_nodes_[direction_anchor_node_id].position.y;
+  preferred_direction.z = current_pose_.position.z -
+                          graph_nodes_[direction_anchor_node_id].position.z;
 
-  const auto anchor_degree = graph_nodes_[direction_anchor_node_id].edges.size() +
-                             (graph_nodes_[direction_anchor_node_id].is_dead_end ? 1 : 0);
-  if (anchor_degree == 1 && !graph_nodes_[direction_anchor_node_id].edges.empty()) {
-    const int predecessor_id = *graph_nodes_[direction_anchor_node_id].edges.begin();
+  const auto anchor_degree =
+      graph_nodes_[direction_anchor_node_id].edges.size() +
+      (graph_nodes_[direction_anchor_node_id].is_dead_end ? 1 : 0);
+  if (anchor_degree == 1 &&
+      !graph_nodes_[direction_anchor_node_id].edges.empty()) {
+    const int predecessor_id =
+        *graph_nodes_[direction_anchor_node_id].edges.begin();
     if (graph_nodes_.count(predecessor_id) > 0) {
-      preferred_direction.x = graph_nodes_[direction_anchor_node_id].position.x -
-                              graph_nodes_[predecessor_id].position.x;
-      preferred_direction.y = graph_nodes_[direction_anchor_node_id].position.y -
-                              graph_nodes_[predecessor_id].position.y;
-      preferred_direction.z = graph_nodes_[direction_anchor_node_id].position.z -
-                              graph_nodes_[predecessor_id].position.z;
+      preferred_direction.x =
+          graph_nodes_[direction_anchor_node_id].position.x -
+          graph_nodes_[predecessor_id].position.x;
+      preferred_direction.y =
+          graph_nodes_[direction_anchor_node_id].position.y -
+          graph_nodes_[predecessor_id].position.y;
+      preferred_direction.z =
+          graph_nodes_[direction_anchor_node_id].position.z -
+          graph_nodes_[predecessor_id].position.z;
     }
   }
 
-  const double preferred_norm = std::hypot(preferred_direction.x, preferred_direction.y);
+  const double preferred_norm =
+      std::hypot(preferred_direction.x, preferred_direction.y);
 
   int target_leaf = -1;
   double best_alignment = -std::numeric_limits<double>::max();
@@ -3302,8 +3457,10 @@ void MissionFsmNode::update_mode_decision() {
 
     double alignment = 0.0;
     if (preferred_norm > 1e-3) {
-      const double vx = leaf_pos.x - graph_nodes_[direction_anchor_node_id].position.x;
-      const double vy = leaf_pos.y - graph_nodes_[direction_anchor_node_id].position.y;
+      const double vx =
+          leaf_pos.x - graph_nodes_[direction_anchor_node_id].position.x;
+      const double vy =
+          leaf_pos.y - graph_nodes_[direction_anchor_node_id].position.y;
       const double vnorm = std::hypot(vx, vy);
       if (vnorm > 1e-3) {
         alignment = (vx * preferred_direction.x + vy * preferred_direction.y) /
@@ -3319,8 +3476,10 @@ void MissionFsmNode::update_mode_decision() {
     }
   }
 
-  const int start_node = (current_node_id_ >= 0) ? current_node_id_ : last_visited_node_id_;
-  if (start_node < 0 || graph_nodes_.count(start_node) == 0 || target_leaf < 0) {
+  const int start_node =
+      (current_node_id_ >= 0) ? current_node_id_ : last_visited_node_id_;
+  if (start_node < 0 || graph_nodes_.count(start_node) == 0 ||
+      target_leaf < 0) {
     single_edge_travel_target_node_id_ = -1;
     clear_single_edge_priority_target();
     travel_mode_ = false;
@@ -3411,7 +3570,8 @@ void MissionFsmNode::set_single_edge_priority_target(int target_node_id) {
   priority_target_pub_->publish(msg);
 
   RCLCPP_INFO(this->get_logger(),
-              "Activated single-edge exploration priority toward node %d at [%.2f, %.2f, %.2f].",
+              "Activated single-edge exploration priority toward node %d at "
+              "[%.2f, %.2f, %.2f].",
               target_node_id, msg.point.x, msg.point.y, msg.point.z);
 }
 
@@ -3428,7 +3588,8 @@ void MissionFsmNode::clear_single_edge_priority_target() {
   msg.point.y = std::numeric_limits<double>::quiet_NaN();
   msg.point.z = std::numeric_limits<double>::quiet_NaN();
   priority_target_pub_->publish(msg);
-  RCLCPP_INFO(this->get_logger(), "Cleared single-edge exploration priority target.");
+  RCLCPP_INFO(this->get_logger(),
+              "Cleared single-edge exploration priority target.");
 }
 
 void MissionFsmNode::set_single_edge_punishment_target(int target_node_id) {
@@ -3444,7 +3605,8 @@ void MissionFsmNode::set_single_edge_punishment_target(int target_node_id) {
   punishment_target_pub_->publish(msg);
 
   RCLCPP_INFO(this->get_logger(),
-              "Activated single-edge return punishment toward predecessor node %d at [%.2f, %.2f, %.2f].",
+              "Activated single-edge return punishment toward predecessor node "
+              "%d at [%.2f, %.2f, %.2f].",
               target_node_id, msg.point.x, msg.point.y, msg.point.z);
 }
 
@@ -3461,15 +3623,18 @@ void MissionFsmNode::clear_single_edge_punishment_target() {
   msg.point.y = std::numeric_limits<double>::quiet_NaN();
   msg.point.z = std::numeric_limits<double>::quiet_NaN();
   punishment_target_pub_->publish(msg);
-  RCLCPP_INFO(this->get_logger(), "Cleared single-edge return punishment target.");
+  RCLCPP_INFO(this->get_logger(),
+              "Cleared single-edge return punishment target.");
 }
 
-void MissionFsmNode::mark_potential_node_unreachable_near(const geometry_msgs::msg::Point &pos) {
+void MissionFsmNode::mark_potential_node_unreachable_near(
+    const geometry_msgs::msg::Point &pos) {
   for (auto &entry : graph_nodes_) {
     auto &pots = entry.second.potentials;
     pots.erase(std::remove_if(pots.begin(), pots.end(),
                               [&](const PotentialNode &pot) {
-                                return calculate_distance(pot.position, pos) <= node_radius_;
+                                return calculate_distance(pot.position, pos) <=
+                                       node_radius_;
                               }),
                pots.end());
   }
