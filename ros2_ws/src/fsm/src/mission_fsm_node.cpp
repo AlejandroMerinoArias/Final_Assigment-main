@@ -362,6 +362,7 @@ void MissionFsmNode::execute_frozen_recovery() {
   single_edge_travel_target_node_id_ = -1;
   clear_single_edge_priority_target();
   clear_single_edge_punishment_target();
+  returning_to_entrance_via_travel_ = false;
   consecutive_too_close_rejections_ = 0;
   consecutive_goal_request_failures_ = 0;
   detected_lantern_poses_.clear();
@@ -763,6 +764,7 @@ void MissionFsmNode::on_state_enter(MissionState state) {
       reset_explorer_goal_filters();
       last_successful_exploration_goal_time_ = this->now();
       reset_explorer_filters_on_next_goal_ = false;
+      returning_to_entrance_via_travel_ = false;
       if (macroplanning_enabled_ && entrance_node_id_ < 0) {
         entrance_node_id_ = create_checkpoint_node(cave_entrance_, true);
         last_visited_node_id_ = entrance_node_id_;
@@ -841,6 +843,9 @@ void MissionFsmNode::on_state_exit(MissionState state) {
     single_edge_travel_target_node_id_ = -1;
     potential_objective_timer_active_ = false;
     potential_objective_anchor_node_id_ = -1;
+    returning_to_entrance_via_travel_ = false;
+    travel_mode_ = false;
+    travel_path_.clear();
     active_rrt_waypoints_.clear();
     clear_single_edge_priority_target();
     ++explorer_request_epoch_;
@@ -893,6 +898,46 @@ void MissionFsmNode::update_state() {
     break;
 
   case MissionState::EXPLORE:
+    if (returning_to_entrance_via_travel_) {
+      // Mission-complete return corridor: keep only travel-to-entrance logic
+      // and skip all exploration-node decision machinery.
+      if (!goal_active_ && !goal_request_pending_ &&
+          macroplanning_enabled_ && travel_mode_ && !travel_path_.empty()) {
+        const int next_node_id = travel_path_.front();
+        if (graph_nodes_.count(next_node_id) > 0) {
+          RCLCPP_INFO(this->get_logger(),
+                      "Mission-complete return: traversing checkpoint node %d toward entrance.",
+                      next_node_id);
+          if (!try_activate_exploration_goal(graph_nodes_.at(next_node_id).position,
+                                             true, GoalSource::TRAVEL, -1)) {
+            RCLCPP_WARN(this->get_logger(),
+                        "Failed to activate mission-complete return checkpoint %d. Skipping node.",
+                        next_node_id);
+            clear_node_relocation_state(next_node_id);
+            travel_path_.pop_front();
+            if (travel_path_.empty()) {
+              travel_mode_ = false;
+            }
+          }
+        } else {
+          travel_path_.pop_front();
+          if (travel_path_.empty()) {
+            travel_mode_ = false;
+          }
+        }
+      }
+
+      const double entrance_dist = calculate_distance(current_pose_.position, cave_entrance_);
+      if ((!travel_mode_ || travel_path_.empty()) && !goal_active_ &&
+          entrance_dist <= GOAL_REACHED_THRESHOLD) {
+        RCLCPP_INFO(this->get_logger(),
+                    "Mission-complete return reached cave entrance. Transitioning to RETURN.");
+        returning_to_entrance_via_travel_ = false;
+        transition_to(MissionState::RETURN);
+      }
+      break;
+    }
+
     if (macroplanning_enabled_) {
       const double potential_prune_radius =
           (active_goal_source_ == GoalSource::POTENTIAL)
@@ -926,9 +971,30 @@ void MissionFsmNode::update_state() {
     // Check if we've found all lanterns
     if (lanterns_found_count_ >= TARGET_LANTERN_COUNT) {
       RCLCPP_INFO(this->get_logger(),
-                  "All %zu lanterns found! Mission complete.",
+                  "All %zu lanterns found! Dropping exploration logic and returning to cave entrance via travel mode.",
                   TARGET_LANTERN_COUNT);
-      transition_to(MissionState::RETURN);
+
+      if (goal_active_) {
+        cancel_pub_->publish(std_msgs::msg::Empty());
+      }
+      goal_active_ = false;
+      goal_request_pending_ = false;
+      ++explorer_request_epoch_;
+      active_goal_source_ = GoalSource::TRAVEL;
+      active_goal_anchor_node_id_ = -1;
+      potential_resolution_node_id_ = -1;
+      potential_objective_timer_active_ = false;
+      potential_objective_anchor_node_id_ = -1;
+      single_edge_travel_target_node_id_ = -1;
+      clear_single_edge_priority_target();
+      clear_single_edge_punishment_target();
+
+      if (!start_return_to_entrance_via_travel()) {
+        RCLCPP_WARN(this->get_logger(),
+                    "Unable to build travel corridor to cave entrance. Falling back to direct RETURN.");
+        returning_to_entrance_via_travel_ = false;
+        transition_to(MissionState::RETURN);
+      }
       break;
     }
 
@@ -2968,8 +3034,71 @@ void MissionFsmNode::update_checkpoint_graph() {
   }
 }
 
+bool MissionFsmNode::start_return_to_entrance_via_travel() {
+  returning_to_entrance_via_travel_ = true;
+
+  if (!macroplanning_enabled_) {
+    return false;
+  }
+
+  if (entrance_node_id_ < 0 || graph_nodes_.count(entrance_node_id_) == 0) {
+    entrance_node_id_ = create_checkpoint_node(cave_entrance_, true);
+  }
+
+  if (entrance_node_id_ < 0 || graph_nodes_.count(entrance_node_id_) == 0) {
+    return false;
+  }
+
+  int start_node = -1;
+  if (current_node_id_ >= 0 && graph_nodes_.count(current_node_id_) > 0) {
+    start_node = current_node_id_;
+  } else if (last_visited_node_id_ >= 0 && graph_nodes_.count(last_visited_node_id_) > 0) {
+    start_node = last_visited_node_id_;
+  }
+
+  if (start_node < 0) {
+    if (is_inside_node(entrance_node_id_, current_pose_.position)) {
+      travel_mode_ = false;
+      travel_path_.clear();
+      return true;
+    }
+    return false;
+  }
+
+  if (start_node == entrance_node_id_) {
+    travel_mode_ = false;
+    travel_path_.clear();
+    return true;
+  }
+
+  auto path = compute_shortest_path_nodes(start_node, entrance_node_id_);
+  if (path.empty()) {
+    return false;
+  }
+
+  travel_mode_ = true;
+  travel_path_.clear();
+  for (size_t i = 1; i < path.size(); ++i) {
+    travel_path_.push_back(path[i]);
+  }
+
+  if (!explorer_mode_suspended_for_travel_) {
+    suspend_explorer_mode_for_travel();
+  }
+
+  RCLCPP_INFO(this->get_logger(),
+              "Mission-complete return corridor activated: node %d -> entrance node %d (%zu checkpoints).",
+              start_node, entrance_node_id_, travel_path_.size());
+  return true;
+}
+
 void MissionFsmNode::update_mode_decision() {
   const bool was_travel_mode = travel_mode_;
+
+  if (returning_to_entrance_via_travel_) {
+    // Mission complete: keep the precomputed return corridor latched.
+    return;
+  }
 
   if (force_explorer_until_new_node_) {
     const bool reached_new_node =
