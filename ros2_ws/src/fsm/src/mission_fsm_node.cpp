@@ -2931,6 +2931,28 @@ void MissionFsmNode::update_mode_decision() {
     return;
   }
 
+  // Defensive handoff guard:
+  // If we're already at the predecessor of the selected single-edge leaf,
+  // never keep/enter travel mode for that leaf. Immediately switch to
+  // explorer-goal mode with priority reward toward the leaf.
+  if (graph_nodes_.count(target_leaf) > 0 &&
+      !graph_nodes_.at(target_leaf).edges.empty()) {
+    const int predecessor_id = *graph_nodes_.at(target_leaf).edges.begin();
+    if (graph_nodes_.count(predecessor_id) > 0) {
+      const bool at_predecessor =
+          (current_node_id_ == predecessor_id) ||
+          (last_visited_node_id_ == predecessor_id) ||
+          is_inside_node(predecessor_id, current_pose_.position);
+      if (at_predecessor) {
+        set_single_edge_priority_target(target_leaf);
+        travel_mode_ = false;
+        travel_path_.clear();
+        resume_explorer_mode_after_travel();
+        return;
+      }
+    }
+  }
+
   auto path = compute_shortest_path_nodes(start_node, target_leaf);
   if (path.empty()) {
     clear_single_edge_priority_target();
