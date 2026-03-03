@@ -77,6 +77,9 @@ MissionFsmNode::MissionFsmNode()
   this->declare_parameter("single_edge_priority_reached_radius", single_edge_priority_reached_radius_);
   single_edge_priority_reached_radius_ =
       this->get_parameter("single_edge_priority_reached_radius").as_double();
+  this->declare_parameter("waypoint_obstacle_clearance", waypoint_obstacle_clearance_);
+  waypoint_obstacle_clearance_ =
+      this->get_parameter("waypoint_obstacle_clearance").as_double();
 
   // Cave entrance - Main entrance
   cave_entrance_.x = -320.0;
@@ -118,6 +121,10 @@ MissionFsmNode::MissionFsmNode()
   depth_points_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
       "/camera/depth/points_world", rclcpp::SensorDataQoS(),
       std::bind(&MissionFsmNode::depth_points_callback, this, std::placeholders::_1));
+
+  planner_path_sub_ = this->create_subscription<nav_msgs::msg::Path>(
+      "waypoints", 10,
+      std::bind(&MissionFsmNode::planner_path_callback, this, std::placeholders::_1));
 
   // --- Service Clients ---
   exploration_goal_client_ =
@@ -510,6 +517,29 @@ void MissionFsmNode::depth_points_callback(
   }
 }
 
+void MissionFsmNode::planner_path_callback(
+    const nav_msgs::msg::Path::SharedPtr msg) {
+  if (msg->poses.empty()) {
+    return;
+  }
+
+  if (current_state_ != MissionState::EXPLORE || !goal_active_) {
+    return;
+  }
+
+  if (active_goal_source_ != GoalSource::TRAVEL &&
+      active_goal_source_ != GoalSource::POTENTIAL) {
+    return;
+  }
+
+  // Travel/potential goals always use the RRT topic; cache the latest planned
+  // waypoints so we can validate them while flying.
+  active_rrt_waypoints_.clear();
+  for (const auto &pose : msg->poses) {
+    active_rrt_waypoints_.push_back(pose.pose.position);
+  }
+}
+
 void MissionFsmNode::start_mission_callback(
     const std_msgs::msg::Empty::SharedPtr msg) {
   (void)msg;
@@ -662,6 +692,7 @@ void MissionFsmNode::on_state_exit(MissionState state) {
     current_goal_ = geometry_msgs::msg::Point();
     active_goal_source_ = GoalSource::EXPLORER;
     active_goal_anchor_node_id_ = -1;
+    active_rrt_waypoints_.clear();
     clear_single_edge_priority_target();
     ++explorer_request_epoch_;
   }
@@ -747,6 +778,12 @@ void MissionFsmNode::update_state() {
 
     // Check if we've reached the current exploration goal
     if (goal_active_) {
+      if ((active_goal_source_ == GoalSource::TRAVEL ||
+           active_goal_source_ == GoalSource::POTENTIAL) &&
+          monitor_macroplanning_rrt_waypoints()) {
+        break;
+      }
+
       double dist = calculate_distance(current_pose_.position, current_goal_);
       double time_since_goal_set = (this->now() - goal_set_time_).seconds();
       
@@ -1267,6 +1304,84 @@ void MissionFsmNode::replan_current_goal() {
                planner_type_.c_str());
 }
 
+bool MissionFsmNode::waypoint_appears_unreachable(
+    const geometry_msgs::msg::Point &waypoint) const {
+  for (const auto &obstacle : recent_obstacle_points_) {
+    if (calculate_distance(waypoint, obstacle) <= waypoint_obstacle_clearance_) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool MissionFsmNode::monitor_macroplanning_rrt_waypoints() {
+  if (planner_type_ != "RRT" || active_rrt_waypoints_.empty() ||
+      recent_obstacle_points_.empty()) {
+    return false;
+  }
+
+  while (!active_rrt_waypoints_.empty() &&
+         calculate_distance(current_pose_.position, active_rrt_waypoints_.front()) <=
+             GOAL_REACHED_THRESHOLD) {
+    active_rrt_waypoints_.pop_front();
+  }
+
+  if (active_rrt_waypoints_.empty()) {
+    return false;
+  }
+
+  const geometry_msgs::msg::Point &next_waypoint = active_rrt_waypoints_.front();
+  if (!waypoint_appears_unreachable(next_waypoint)) {
+    return false;
+  }
+
+  RCLCPP_WARN(this->get_logger(),
+              "Detected blocked RRT waypoint [%.2f, %.2f, %.2f] while in %s mode. "
+              "Stopping and replanning current goal.",
+              next_waypoint.x, next_waypoint.y, next_waypoint.z,
+              active_goal_source_ == GoalSource::TRAVEL ? "travel" : "potential");
+
+  cancel_pub_->publish(std_msgs::msg::Empty());
+  goal_active_ = false;
+  active_rrt_waypoints_.clear();
+
+  const GoalSource source = active_goal_source_;
+  const int anchor_node_id = active_goal_anchor_node_id_;
+
+  if (try_activate_exploration_goal(current_goal_, true, source, anchor_node_id)) {
+    return true;
+  }
+
+  RCLCPP_WARN(this->get_logger(),
+              "Failed to reactivate blocked %s goal. Falling back to existing failure handling.",
+              source == GoalSource::TRAVEL ? "travel" : "potential");
+
+  if (source == GoalSource::POTENTIAL) {
+    geometry_msgs::msg::Point next_potential_goal;
+    if (anchor_node_id >= 0 &&
+        pop_next_potential_for_node(anchor_node_id, next_potential_goal) &&
+        try_activate_exploration_goal(next_potential_goal, true,
+                                      GoalSource::POTENTIAL,
+                                      anchor_node_id)) {
+      return true;
+    }
+
+    potential_resolution_node_id_ = -1;
+    travel_mode_ = false;
+    active_goal_source_ = GoalSource::EXPLORER;
+    active_goal_anchor_node_id_ = -1;
+    return false;
+  }
+
+  travel_mode_ = false;
+  potential_resolution_node_id_ = -1;
+  travel_path_.clear();
+  resume_explorer_mode_after_travel();
+  active_goal_source_ = GoalSource::EXPLORER;
+  active_goal_anchor_node_id_ = -1;
+  return false;
+}
+
 void MissionFsmNode::publish_state() {
   std_msgs::msg::String state_msg;
   state_msg.data = state_to_string(current_state_);
@@ -1597,6 +1712,7 @@ bool MissionFsmNode::try_activate_exploration_goal(const geometry_msgs::msg::Poi
     consecutive_too_close_rejections_ = 0;
   }
 
+  active_rrt_waypoints_.clear();
   current_goal_ = planner_goal.pose.position;
   goal_set_time_ = this->now();
   last_pose_at_goal_set_ = current_pose_.position;
