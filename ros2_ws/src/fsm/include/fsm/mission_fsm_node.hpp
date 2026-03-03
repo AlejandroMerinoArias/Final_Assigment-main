@@ -138,6 +138,7 @@ private:
   void redistribute_edges_through_nearby_nodes();
   void update_checkpoint_graph();
   void update_mode_decision();
+  bool start_return_to_entrance_via_travel();
   void suspend_explorer_mode_for_travel();
   void resume_explorer_mode_after_travel();
   void register_potential_node_for_anchor(const geometry_msgs::msg::Point &candidate);
@@ -325,6 +326,7 @@ private:
   rclcpp::Time potential_objective_start_time_;
   geometry_msgs::msg::Point potential_objective_goal_;
   int potential_objective_anchor_node_id_ = -1;
+  bool returning_to_entrance_via_travel_ = false;
 
   // --- Frozen watchdog fallback ---
   geometry_msgs::msg::Point freeze_reference_position_;
