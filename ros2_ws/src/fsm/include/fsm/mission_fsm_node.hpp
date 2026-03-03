@@ -291,7 +291,6 @@ private:
   bool reset_explorer_filters_on_next_goal_ = false;
   bool force_explorer_until_new_node_ = false;
   int fallback_origin_node_id_ = -1;
-  int forced_single_edge_target_node_id_ = -1;
   rclcpp::Time force_explorer_start_time_;
   double force_explorer_timeout_s_ = 20.0;
   uint64_t explorer_request_epoch_ = 0;

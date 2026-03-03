@@ -222,23 +222,6 @@ void ExplorationManager::blacklist_callback(
                       static_cast<float>(msg->point.z));
   blacklisted_goals_.push_back(pt);
 
-  // Remove stale exploration memory near the failed goal. Otherwise a goal
-  // abandoned during travel-mode handoff can continue to bias future sampling.
-  const double stale_goal_prune_radius =
-      std::max(blacklist_radius_, recent_goal_hard_reject_radius_);
-  if (stale_goal_prune_radius > 0.0 && !recent_issued_goals_.empty()) {
-    recent_issued_goals_.erase(
-        std::remove_if(
-            recent_issued_goals_.begin(), recent_issued_goals_.end(),
-            [&](const octomap::point3d &issued_goal) {
-              return issued_goal.distance(pt) <= stale_goal_prune_radius;
-            }),
-        recent_issued_goals_.end());
-  }
-
-  // Reset branch commitment whenever a goal is blacklisted.
-  preferred_heading_xy_.reset();
-
   bool merged = false;
   for (auto &region : failed_goal_regions_) {
     if (region.center.distance(pt) <= failed_region_merge_radius_) {
@@ -258,9 +241,9 @@ void ExplorationManager::blacklist_callback(
 
   RCLCPP_INFO(
       this->get_logger(),
-      "Blacklisted goal received: (%.2f, %.2f, %.2f). Total blacklisted: %zu, failed regions: %zu, recent goals kept: %zu",
+      "Blacklisted goal received: (%.2f, %.2f, %.2f). Total blacklisted: %zu, failed regions: %zu",
       msg->point.x, msg->point.y, msg->point.z, blacklisted_goals_.size(),
-      failed_goal_regions_.size(), recent_issued_goals_.size());
+      failed_goal_regions_.size());
 }
 
 // ===========================================================================
