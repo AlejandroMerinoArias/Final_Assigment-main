@@ -313,6 +313,7 @@ private:
   double goal_request_timeout_s_ = 4.0;
   std::unordered_map<int, geometry_msgs::msg::Point> node_relocation_origin_;
   std::unordered_map<int, int> node_relocation_attempts_;
+  int single_edge_travel_target_node_id_ = -1;
   int single_edge_priority_target_node_id_ = -1;
   int single_edge_punishment_target_node_id_ = -1;
   double single_edge_priority_reached_radius_ = 1.0;
