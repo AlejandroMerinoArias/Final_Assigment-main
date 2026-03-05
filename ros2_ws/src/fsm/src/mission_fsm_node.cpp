@@ -1360,8 +1360,16 @@ void MissionFsmNode::update_state() {
             resume_explorer_mode_after_travel();
           }
         }
-      } else if (macroplanning_enabled_ && potential_resolution_node_id_ >= 0 &&
-                 current_node_id_ == potential_resolution_node_id_) {
+      } else if (macroplanning_enabled_ && potential_resolution_node_id_ >= 0) {
+        const bool at_potential_anchor =
+            (current_node_id_ == potential_resolution_node_id_) ||
+            (last_visited_node_id_ == potential_resolution_node_id_) ||
+            is_inside_node(potential_resolution_node_id_, current_pose_.position);
+        if (!at_potential_anchor) {
+          // Anchor is still selected but we are not inside it yet.
+          // Keep explorer requests paused to prevent ownership flapping.
+          break;
+        }
         geometry_msgs::msg::Point potential_goal;
         if (pop_next_potential_for_node(potential_resolution_node_id_,
                                         potential_goal)) {
@@ -2670,6 +2678,7 @@ void MissionFsmNode::fuse_nearby_checkpoint_nodes() {
     double sx = 0.0, sy = 0.0, sz = 0.0;
     bool any_dead_end = false;
     bool any_non_provisional = false;
+    int merged_visit_count = 0;
     std::vector<PotentialNode> merged_potentials;
 
     for (const int id : members) {
@@ -2680,6 +2689,7 @@ void MissionFsmNode::fuse_nearby_checkpoint_nodes() {
       sz += node.position.z;
       any_dead_end = any_dead_end || node.is_dead_end;
       any_non_provisional = any_non_provisional || !node.is_provisional;
+      merged_visit_count += std::max(1, node.visit_count);
       merged_potentials.insert(merged_potentials.end(), node.potentials.begin(),
                                node.potentials.end());
     }
@@ -2690,6 +2700,7 @@ void MissionFsmNode::fuse_nearby_checkpoint_nodes() {
     merged.position.z = sz * inv;
     merged.is_dead_end = any_dead_end;
     merged.is_provisional = !any_non_provisional;
+    merged.visit_count = std::max(1, merged_visit_count);
 
     for (const auto &pot : merged_potentials) {
       bool duplicate = false;
