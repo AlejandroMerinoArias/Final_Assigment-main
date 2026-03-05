@@ -109,6 +109,19 @@ MissionFsmNode::MissionFsmNode()
                           potential_angle_threshold_deg_);
   potential_angle_threshold_deg_ =
       this->get_parameter("potential_angle_threshold_deg").as_double();
+  this->declare_parameter("potential_filter_match_distance",
+                          potential_filter_match_distance_);
+  potential_filter_match_distance_ =
+      this->get_parameter("potential_filter_match_distance").as_double();
+  this->declare_parameter("potential_filter_min_observations",
+                          potential_filter_min_observations_);
+  potential_filter_min_observations_ =
+      this->get_parameter("potential_filter_min_observations").as_int();
+  this->declare_parameter("potential_filter_observation_timeout_s",
+                          potential_filter_observation_timeout_s_);
+  potential_filter_observation_timeout_s_ =
+      this->get_parameter("potential_filter_observation_timeout_s")
+          .as_double();
   this->declare_parameter("seen_point_timeout_s", seen_point_timeout_s_);
   seen_point_timeout_s_ =
       this->get_parameter("seen_point_timeout_s").as_double();
@@ -682,10 +695,57 @@ void MissionFsmNode::depth_points_callback(
       backed_off_point.z += uz * applied_backoff;
     }
 
-    latest_seen_point_ = backed_off_point;
-    latest_seen_point_valid_ = true;
-    latest_seen_point_stamp_ = this->now();
+    geometry_msgs::msg::Point filtered_candidate;
+    if (update_potential_observation_filter(backed_off_point,
+                                            filtered_candidate)) {
+      latest_seen_point_ = filtered_candidate;
+      latest_seen_point_valid_ = true;
+      latest_seen_point_stamp_ = this->now();
+    }
   }
+}
+
+bool MissionFsmNode::update_potential_observation_filter(
+    const geometry_msgs::msg::Point &candidate,
+    geometry_msgs::msg::Point &filtered_candidate_out) {
+  const rclcpp::Time now = this->now();
+  const double match_distance = std::max(0.1, potential_filter_match_distance_);
+  const int min_observations = std::max(1, potential_filter_min_observations_);
+  const double observation_timeout =
+      std::max(0.0, potential_filter_observation_timeout_s_);
+
+  const bool filter_initialized = pending_potential_valid_;
+  const bool observation_is_stale =
+      filter_initialized &&
+      ((now - pending_potential_stamp_).seconds() > observation_timeout);
+
+  if (!filter_initialized || observation_is_stale ||
+      calculate_distance(candidate, pending_potential_point_) >
+          match_distance) {
+    pending_potential_point_ = candidate;
+    pending_potential_valid_ = true;
+    pending_potential_observations_ = 1;
+    pending_potential_stamp_ = now;
+    return min_observations <= 1;
+  }
+
+  const int new_count = pending_potential_observations_ + 1;
+  const double alpha = 1.0 / static_cast<double>(new_count);
+  pending_potential_point_.x =
+      (1.0 - alpha) * pending_potential_point_.x + alpha * candidate.x;
+  pending_potential_point_.y =
+      (1.0 - alpha) * pending_potential_point_.y + alpha * candidate.y;
+  pending_potential_point_.z =
+      (1.0 - alpha) * pending_potential_point_.z + alpha * candidate.z;
+  pending_potential_observations_ = new_count;
+  pending_potential_stamp_ = now;
+
+  if (pending_potential_observations_ < min_observations) {
+    return false;
+  }
+
+  filtered_candidate_out = pending_potential_point_;
+  return true;
 }
 
 void MissionFsmNode::planner_path_callback(

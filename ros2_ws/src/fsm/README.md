@@ -203,6 +203,9 @@ Macroplanning graph and potentials:
 - `max_potential_node_range`
 - `potential_node_backoff_distance`
 - `potential_angle_threshold_deg`
+- `potential_filter_match_distance`
+- `potential_filter_min_observations`
+- `potential_filter_observation_timeout_s`
 - `seen_point_timeout_s`
 - `force_explorer_timeout_s`
 - `single_edge_priority_reached_radius`
