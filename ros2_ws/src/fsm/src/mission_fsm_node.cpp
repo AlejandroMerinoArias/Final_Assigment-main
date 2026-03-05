@@ -488,24 +488,8 @@ void MissionFsmNode::planner_status_callback(
       }
 
       if (target_node_id >= 0 && graph_nodes_.count(target_node_id) > 0) {
-        geometry_msgs::msg::Point alternate_position;
-        if (find_alternate_position_for_node(target_node_id,
-                                             alternate_position)) {
-          graph_nodes_[target_node_id].position = alternate_position;
-          RCLCPP_WARN(this->get_logger(),
-                      "Travel checkpoint node %d unreachable. Retrying with "
-                      "nearby node position [%.2f, %.2f, %.2f].",
-                      target_node_id, alternate_position.x,
-                      alternate_position.y, alternate_position.z);
-          try_activate_exploration_goal(alternate_position, true,
-                                        GoalSource::TRAVEL, -1);
-          return;
-        }
-
-        RCLCPP_ERROR(this->get_logger(),
-                     "Travel checkpoint node %d remained unreachable after "
-                     "nearby retries. Falling back to explorer mode.",
-                     target_node_id);
+        mark_active_travel_edge_for_deletion(
+            "travel PLAN_FAILED while traversing checkpoint connection");
         clear_node_relocation_state(target_node_id);
       }
 
@@ -954,6 +938,20 @@ void MissionFsmNode::update_state() {
                       "Mission-complete return: traversing checkpoint node %d "
                       "toward entrance.",
                       next_node_id);
+          set_active_travel_edge_to_target(next_node_id);
+          if (!is_rrt_feasible_between(current_pose_.position,
+                                       graph_nodes_.at(next_node_id).position)) {
+            mark_active_travel_edge_for_deletion(
+                "pre-check failed: no feasible RRT corridor from drone to target node");
+            clear_node_relocation_state(next_node_id);
+            travel_path_.pop_front();
+            if (travel_path_.empty()) {
+              travel_mode_ = false;
+              active_travel_from_node_id_ = -1;
+              active_travel_to_node_id_ = -1;
+            }
+            return;
+          }
           if (!try_activate_exploration_goal(
                   graph_nodes_.at(next_node_id).position, true,
                   GoalSource::TRAVEL, -1)) {
@@ -961,10 +959,14 @@ void MissionFsmNode::update_state() {
                         "Failed to activate mission-complete return checkpoint "
                         "%d. Skipping node.",
                         next_node_id);
+            mark_active_travel_edge_for_deletion(
+                "unable to activate return-corridor travel goal");
             clear_node_relocation_state(next_node_id);
             travel_path_.pop_front();
             if (travel_path_.empty()) {
               travel_mode_ = false;
+              active_travel_from_node_id_ = -1;
+              active_travel_to_node_id_ = -1;
             }
           }
         } else {
@@ -1098,6 +1100,8 @@ void MissionFsmNode::update_state() {
             last_visited_node_id_ = reached_node_id;
             clear_node_relocation_state(reached_node_id);
             travel_path_.pop_front();
+            active_travel_from_node_id_ = -1;
+            active_travel_to_node_id_ = -1;
           }
 
           if (current_node_id_ >= 0 &&
@@ -1315,6 +1319,20 @@ void MissionFsmNode::update_state() {
           RCLCPP_INFO(this->get_logger(),
                       "Travel mode: traversing to checkpoint node %d.",
                       next_node_id);
+          set_active_travel_edge_to_target(next_node_id);
+          if (!is_rrt_feasible_between(current_pose_.position,
+                                       graph_nodes_.at(next_node_id).position)) {
+            mark_active_travel_edge_for_deletion(
+                "pre-check failed: no feasible RRT corridor from drone to target node");
+            clear_node_relocation_state(next_node_id);
+            travel_path_.pop_front();
+            if (travel_path_.empty()) {
+              travel_mode_ = false;
+              active_travel_from_node_id_ = -1;
+              active_travel_to_node_id_ = -1;
+            }
+            return;
+          }
           if (!try_activate_exploration_goal(
                   graph_nodes_.at(next_node_id).position, true,
                   GoalSource::TRAVEL, -1)) {
@@ -1322,10 +1340,14 @@ void MissionFsmNode::update_state() {
                 this->get_logger(),
                 "Failed to activate travel checkpoint node %d. Skipping node.",
                 next_node_id);
+            mark_active_travel_edge_for_deletion(
+                "unable to activate travel traversal goal");
             clear_node_relocation_state(next_node_id);
             travel_path_.pop_front();
             if (travel_path_.empty()) {
               travel_mode_ = false;
+              active_travel_from_node_id_ = -1;
+              active_travel_to_node_id_ = -1;
               single_edge_travel_target_node_id_ = -1;
               resume_explorer_mode_after_travel();
             }
@@ -2370,8 +2392,109 @@ void MissionFsmNode::add_edge_between_nodes(int from_node, int to_node) {
       graph_nodes_.count(from_node) == 0 || graph_nodes_.count(to_node) == 0) {
     return;
   }
+
+  if (is_edge_blocked(from_node, to_node)) {
+    RCLCPP_DEBUG(this->get_logger(),
+                 "Skipping blocked checkpoint edge generation %d <-> %d.",
+                 from_node, to_node);
+    return;
+  }
+
   graph_nodes_[from_node].edges.insert(to_node);
   graph_nodes_[to_node].edges.insert(from_node);
+}
+
+void MissionFsmNode::remove_edge_between_nodes(int from_node, int to_node) {
+  if (from_node < 0 || to_node < 0 || from_node == to_node) {
+    return;
+  }
+  if (graph_nodes_.count(from_node) > 0) {
+    graph_nodes_[from_node].edges.erase(to_node);
+  }
+  if (graph_nodes_.count(to_node) > 0) {
+    graph_nodes_[to_node].edges.erase(from_node);
+  }
+}
+
+std::pair<int, int>
+MissionFsmNode::canonical_edge_key(int node_a, int node_b) const {
+  if (node_a <= node_b) {
+    return {node_a, node_b};
+  }
+  return {node_b, node_a};
+}
+
+bool MissionFsmNode::is_edge_blocked(int from_node, int to_node) const {
+  const auto from_it = graph_nodes_.find(from_node);
+  const auto to_it = graph_nodes_.find(to_node);
+  if (from_it == graph_nodes_.end() || to_it == graph_nodes_.end()) {
+    return false;
+  }
+  return from_it->second.blocked_neighbors.count(to_node) > 0 ||
+         to_it->second.blocked_neighbors.count(from_node) > 0;
+}
+
+void MissionFsmNode::mark_edge_blocked(int from_node, int to_node,
+                                       const std::string &reason) {
+  if (from_node < 0 || to_node < 0 || from_node == to_node ||
+      graph_nodes_.count(from_node) == 0 || graph_nodes_.count(to_node) == 0) {
+    return;
+  }
+
+  graph_nodes_[from_node].blocked_neighbors.insert(to_node);
+  graph_nodes_[to_node].blocked_neighbors.insert(from_node);
+
+  const auto edge_key = canonical_edge_key(from_node, to_node);
+  deletable_edges_.insert(edge_key);
+  remove_edge_between_nodes(from_node, to_node);
+
+  RCLCPP_WARN(
+      this->get_logger(),
+      "Marked edge %d <-> %d as blocked/deletable and removed it from graph%s%s",
+      from_node, to_node, reason.empty() ? "" : ": ", reason.c_str());
+}
+
+void MissionFsmNode::mark_active_travel_edge_for_deletion(
+    const std::string &reason) {
+  if (active_travel_from_node_id_ < 0 || active_travel_to_node_id_ < 0) {
+    return;
+  }
+  mark_edge_blocked(active_travel_from_node_id_, active_travel_to_node_id_,
+                    reason);
+  active_travel_from_node_id_ = -1;
+  active_travel_to_node_id_ = -1;
+}
+
+bool MissionFsmNode::set_active_travel_edge_to_target(int target_node_id) {
+  if (target_node_id < 0 || graph_nodes_.count(target_node_id) == 0) {
+    active_travel_from_node_id_ = -1;
+    active_travel_to_node_id_ = -1;
+    return false;
+  }
+
+  int from_node_id = -1;
+  if (current_node_id_ >= 0 && graph_nodes_.count(current_node_id_) > 0 &&
+      graph_nodes_.at(current_node_id_).edges.count(target_node_id) > 0) {
+    from_node_id = current_node_id_;
+  } else if (last_visited_node_id_ >= 0 &&
+             graph_nodes_.count(last_visited_node_id_) > 0 &&
+             graph_nodes_.at(last_visited_node_id_).edges.count(target_node_id) >
+                 0) {
+    from_node_id = last_visited_node_id_;
+  }
+
+  if (from_node_id < 0) {
+    for (const int neighbor_id : graph_nodes_.at(target_node_id).edges) {
+      if (is_inside_node(neighbor_id, current_pose_.position)) {
+        from_node_id = neighbor_id;
+        break;
+      }
+    }
+  }
+
+  active_travel_from_node_id_ = from_node_id;
+  active_travel_to_node_id_ = target_node_id;
+  return (active_travel_from_node_id_ >= 0);
 }
 
 void MissionFsmNode::remove_checkpoint_node(int node_id) {
@@ -2384,7 +2507,11 @@ void MissionFsmNode::remove_checkpoint_node(int node_id) {
   for (const int neighbor : neighbors) {
     if (graph_nodes_.count(neighbor) > 0) {
       graph_nodes_[neighbor].edges.erase(node_id);
+      graph_nodes_[neighbor].blocked_neighbors.erase(node_id);
     }
+  }
+  for (auto &entry : graph_nodes_) {
+    entry.second.blocked_neighbors.erase(node_id);
   }
 
   if (current_node_id_ == node_id) {
@@ -2403,6 +2530,18 @@ void MissionFsmNode::remove_checkpoint_node(int node_id) {
   travel_path_.erase(
       std::remove(travel_path_.begin(), travel_path_.end(), node_id),
       travel_path_.end());
+  for (auto it_edge = deletable_edges_.begin(); it_edge != deletable_edges_.end();) {
+    if (it_edge->first == node_id || it_edge->second == node_id) {
+      it_edge = deletable_edges_.erase(it_edge);
+    } else {
+      ++it_edge;
+    }
+  }
+  if (active_travel_from_node_id_ == node_id ||
+      active_travel_to_node_id_ == node_id) {
+    active_travel_from_node_id_ = -1;
+    active_travel_to_node_id_ = -1;
+  }
   clear_node_relocation_state(node_id);
   graph_nodes_.erase(node_id);
 }
