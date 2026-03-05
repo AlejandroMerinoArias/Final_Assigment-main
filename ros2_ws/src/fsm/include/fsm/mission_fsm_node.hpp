@@ -143,6 +143,9 @@ private:
   void suspend_explorer_mode_for_travel();
   void resume_explorer_mode_after_travel();
   void register_potential_node_for_anchor(const geometry_msgs::msg::Point &candidate);
+  bool update_potential_observation_filter(
+      const geometry_msgs::msg::Point &candidate,
+      geometry_msgs::msg::Point &filtered_candidate_out);
   bool is_potential_valid_global(const geometry_msgs::msg::Point &candidate) const;
   void prune_potentials_within_node_distance_recursive();
   bool node_has_resolvable_potential(int node_id) const;
@@ -309,6 +312,13 @@ private:
   double max_potential_node_range_ = 60.0;
   double potential_node_backoff_distance_ = 1.5;
   double potential_angle_threshold_deg_ = 15.0;
+  double potential_filter_match_distance_ = 5.0;
+  int potential_filter_min_observations_ = 3;
+  double potential_filter_observation_timeout_s_ = 0.8;
+  geometry_msgs::msg::Point pending_potential_point_;
+  bool pending_potential_valid_ = false;
+  int pending_potential_observations_ = 0;
+  rclcpp::Time pending_potential_stamp_;
   geometry_msgs::msg::Point latest_seen_point_;
   bool latest_seen_point_valid_ = false;
   rclcpp::Time latest_seen_point_stamp_;
