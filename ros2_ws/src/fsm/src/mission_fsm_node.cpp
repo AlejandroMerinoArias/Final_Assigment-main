@@ -3347,6 +3347,43 @@ void MissionFsmNode::update_mode_decision() {
     }
   }
 
+  // Revisited single-edge handling (Rule-L extension):
+  // Once a leaf/corridor node has been visited at least twice (entered,
+  // exited, then re-entered), hand over to potential-resolution mode when
+  // resolvable potentials remain. This intentionally disables explorer-goal
+  // ownership so the anchor's potential queue is exhausted deterministically.
+  if (current_node_id_ >= 0 && current_node_id_ != entrance_node_id_ &&
+      graph_nodes_.count(current_node_id_) > 0) {
+    const auto &node = graph_nodes_.at(current_node_id_);
+    const size_t node_degree =
+        node.edges.size() + (node.is_dead_end ? 1u : 0u);
+
+    if (node_degree == 1u && node.visit_count >= 2 &&
+        node_has_resolvable_potential(current_node_id_)) {
+      if (goal_active_ && active_goal_source_ == GoalSource::EXPLORER) {
+        cancel_pub_->publish(std_msgs::msg::Empty());
+        goal_active_ = false;
+      }
+
+      clear_single_edge_priority_target();
+      single_edge_travel_target_node_id_ = -1;
+      travel_mode_ = false;
+      travel_path_.clear();
+      potential_resolution_node_id_ = current_node_id_;
+
+      if (!explorer_mode_suspended_for_travel_) {
+        suspend_explorer_mode_for_travel();
+      }
+
+      RCLCPP_INFO(this->get_logger(),
+                  "Node %d revisit count=%d with pending potentials. "
+                  "Switching from single-edge explorer policy to potential "
+                  "resolution mode.",
+                  current_node_id_, node.visit_count);
+      return;
+    }
+  }
+
   if (single_edge_nodes.empty()) {
     clear_single_edge_priority_target();
     const int start_node =
