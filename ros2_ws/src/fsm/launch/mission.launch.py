@@ -141,7 +141,7 @@ def generate_launch_description():
         parameters=[
             # Minimum distance for exploration goals (meters)
             # Goals closer than this will be rejected to avoid tiny steps
-            {'min_exploration_goal_distance': 3.0},
+            {'min_exploration_goal_distance': 2.0},
             {'lantern_dedup_threshold': 2.5},
             # Goal-selection watchdog configuration
             # If we have not activated a new exploration goal for this many
@@ -322,9 +322,9 @@ def generate_launch_description():
             {'update_rate_hz': 4.0}, # Faster update rate for sampling (lightweight)
             
             # Dai-Lite Sampling Parameters
-            {'num_candidates': 20},           # Random samples per request
+            {'num_candidates': 30},           # Random samples per request
             {'downsample_grid': 1.0},         # Spatial spreading grid (m)
-            {'frontier_search_radius': 10.0}, # BBX radius for frontier detection (m)
+            {'frontier_search_radius': 20.0}, # BBX radius for frontier detection (m)
             
             # Scoring & Constraints
             {'drone_speed': 2.0},             # For travel time estimation (m/s)
@@ -345,7 +345,7 @@ def generate_launch_description():
             {'failed_region_reject_radius_gain': 0.7},
             {'failed_region_max_hits': 6},
             {'backtrack_reject_distance': 2.5},
-            {'backtrack_penalty_factor': 0.55},
+            {'backtrack_penalty_factor': 0.59},
             {'heading_update_alpha': 0.35},
         ],
     )

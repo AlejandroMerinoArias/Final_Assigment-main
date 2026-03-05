@@ -158,6 +158,8 @@ private:
   bool is_within_node_distance_of_any_node(const geometry_msgs::msg::Point &pos) const;
   bool find_safer_node_position(const geometry_msgs::msg::Point &center,
                                 geometry_msgs::msg::Point &safe_out) const;
+  bool is_rrt_feasible_between(const geometry_msgs::msg::Point &from,
+                               const geometry_msgs::msg::Point &to) const;
   bool find_alternate_position_for_node(int node_id,
                                         geometry_msgs::msg::Point &candidate_out);
   void clear_node_relocation_state(int node_id);

@@ -1661,6 +1661,41 @@ bool MissionFsmNode::waypoint_appears_unreachable(
   return false;
 }
 
+bool MissionFsmNode::is_rrt_feasible_between(
+    const geometry_msgs::msg::Point &from,
+    const geometry_msgs::msg::Point &to) const {
+  // Only apply this check when using the RRT-based global planner and when
+  // we actually have obstacle samples available. In other cases, fall back
+  // to allowing the connection.
+  if (planner_type_ != "RRT" || recent_obstacle_points_.empty()) {
+    return true;
+  }
+
+  const double length = calculate_distance(from, to);
+  if (length < 1e-3) {
+    return true;
+  }
+
+  // Sample points along the straight-line segment between the two nodes
+  // and reuse the waypoint_appears_unreachable heuristic to detect
+  // obstacle intersections. This serves as a lightweight feasibility check
+  // before adding a checkpoint edge.
+  static constexpr int kNumSamples = 10;
+  for (int i = 1; i < kNumSamples; ++i) {
+    const double t = static_cast<double>(i) /
+                     static_cast<double>(kNumSamples);
+    geometry_msgs::msg::Point p;
+    p.x = from.x + t * (to.x - from.x);
+    p.y = from.y + t * (to.y - from.y);
+    p.z = from.z + t * (to.z - from.z);
+
+    if (waypoint_appears_unreachable(p)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool MissionFsmNode::monitor_macroplanning_rrt_waypoints() {
   if (planner_type_ != "RRT" || active_rrt_waypoints_.empty() ||
       recent_obstacle_points_.empty()) {
@@ -3073,7 +3108,40 @@ void MissionFsmNode::update_checkpoint_graph() {
     if (last_visited_node_id_ >= 0 &&
         last_visited_node_id_ != current_node_id_) {
       if (entered_node) {
-        add_edge_between_nodes(last_visited_node_id_, current_node_id_);
+        bool connect_edge = true;
+
+        const auto last_it = graph_nodes_.find(last_visited_node_id_);
+        const auto curr_it = graph_nodes_.find(current_node_id_);
+        if (last_it != graph_nodes_.end() && curr_it != graph_nodes_.end()) {
+          const auto &last_node = last_it->second;
+          const auto &curr_node = curr_it->second;
+
+          const size_t last_degree =
+              last_node.edges.size() + (last_node.is_dead_end ? 1u : 0u);
+          const size_t curr_degree =
+              curr_node.edges.size() + (curr_node.is_dead_end ? 1u : 0u);
+
+          const bool last_is_single_edge = (last_degree == 1u);
+          const bool curr_has_multiple_edges = (curr_degree > 1u);
+
+          // Only perform the feasibility check when the last node is a
+          // single-edge node and the current node has more than one edge.
+          if (last_is_single_edge && curr_has_multiple_edges) {
+            if (!is_rrt_feasible_between(last_node.position,
+                                         curr_node.position)) {
+              RCLCPP_INFO(
+                  this->get_logger(),
+                  "Skipping checkpoint edge %d -> %d: RRT feasibility check "
+                  "failed (likely blocked by obstacles).",
+                  last_visited_node_id_, current_node_id_);
+              connect_edge = false;
+            }
+          }
+        }
+
+        if (connect_edge) {
+          add_edge_between_nodes(last_visited_node_id_, current_node_id_);
+        }
       }
     }
 
@@ -3398,27 +3466,6 @@ void MissionFsmNode::update_mode_decision() {
        (graph_nodes_[current_node_id_].edges.size() +
             (graph_nodes_[current_node_id_].is_dead_end ? 1 : 0) ==
         1));
-
-  // Rule M (single-edge revisit -> potential resolution):
-  // If we are currently in a single-edge node for at least the second visit,
-  // force potential resolution from that node instead of directional
-  // single-edge traversal.
-  if (in_node_with_one_edge &&
-      graph_nodes_[current_node_id_].visit_count >= 2 &&
-      node_has_resolvable_potential(current_node_id_)) {
-    if (goal_active_ && active_goal_source_ == GoalSource::TRAVEL) {
-      cancel_pub_->publish(std_msgs::msg::Empty());
-      goal_active_ = false;
-    }
-    potential_resolution_node_id_ = current_node_id_;
-    single_edge_travel_target_node_id_ = -1;
-    clear_single_edge_priority_target();
-    travel_mode_ = false;
-    travel_path_.clear();
-    resume_explorer_mode_after_travel();
-    return;
-  }
-
   const bool outside_node = (current_node_id_ < 0);
   const bool last_has_one_edge =
       (last_visited_node_id_ != entrance_node_id_ &&

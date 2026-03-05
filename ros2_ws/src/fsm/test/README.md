@@ -1,79 +1,62 @@
-# Mission FSM Test Suite (`fsm/test`)
+# Mission FSM Node Tests
 
-This directory contains GoogleTest-based tests for `control::MissionFsmNode`.
+This directory contains the unit and integration tests for the `MissionFsmNode` in the `FSM` package.
 
-The tests instantiate the real FSM node plus a companion ROS 2 test node that:
+## Running Tests
 
-- publishes simulated mission inputs (odometry, planner status, mission start, lantern detections),
-- subscribes to `/fsm/state`, and
-- asserts mission-state transitions.
-
----
-
-## Build and run
+You can run the tests using `colcon test`:
 
 ```bash
-# Build only the fsm package (including tests)
-colcon build --packages-select fsm
+# Build the package (and tests)
+colcon build --packages-select FSM
 
-# Run only fsm tests
-colcon test --packages-select fsm
+# Run tests
+colcon test --packages-select FSM
 
-# Show detailed test results
+# View detailed results
 colcon test-result --all --verbose
 ```
 
-> Note: Package name is `fsm` (lowercase), matching `package.xml` / CMake setup.
+## Test Structure
 
----
+The tests use **GoogleTest** (`gtest`) and the `rclcpp` framework.
 
-## Test fixture overview
+### `MissionFsmNodeTest` Fixture
+A test fixture is set up to create an isolated environment for each test case:
+- **`node_`**: The instance of `MissionFsmNode` under test.
+- **`tester_node_`**: A companion node that inputs data into the FSM and subscribes to its outputs.
+- **`PublishStartSignal()`**: Helper to simulate the user start signal.
+- **Initialization**: Sets up publishers for Odometry, Lanterns, Planner Status, and Start Signal.
 
-The `MissionFsmNodeTest` fixture creates:
+## Test Cases
 
-- `node_`: the `MissionFsmNode` under test,
-- `tester_node_`: helper ROS node for driving inputs and observing outputs,
-- helper methods:
-  - `PublishOdom(x, y, z)`
-  - `PublishStartSignal()`
-  - `Spin(duration)`
+### 1. `InitialStateIsInit`
+Verifies that the node starts in the `INIT` state and remains there even if odometry is received, waiting for the explicit start signal.
 
-Observed output:
+### 2. `TransitionsToTakeoffAfterOdomAndSignal`
+Verifies that the FSM transitions to `TAKEOFF` only after **both** valid odometry and the user start signal are received.
 
-- `/fsm/state` (`std_msgs/msg/String`), captured in `last_state_`.
+### 3. `TransitionsToGotoEntranceAfterTakeoffHeightReached`
+Simulates the drone reaching the target takeoff altitude (2.0m) and asserts the transition to `GOTO_ENTRANCE`.
 
----
+### 4. `TransitionsToExploreAfterReachingEntrance`
+Simulates the drone reaching the cave entrance coordinates and asserts the transition to `EXPLORE`.
 
-## Current test cases
+### 5. `LanternDetectionInterruptsExplore`
+Verifies the interrupt logic:
+- Puts the FSM in `EXPLORE` mode.
+- Publishes a lantern detection.
+- Asserts that the FSM immediately transitions to `LANTERN_FOUND`.
+- Verifies it automatically returns to `EXPLORE` (or `RETURN`) after processing.
 
-1. **`InitialStateIsInit`**
-   Verifies startup state is `INIT`, and odometry alone does not leave `INIT`.
+### 6. `PlannerFailureTriggersRefineGoal`
+Verifies the recovery logic:
+- Simulates a `PLAN_FAILED` message from the path planner.
+- Asserts the FSM transitions to `REFINE_GOAL` to attempt a Z-height recovery.
 
-2. **`TransitionsToTakeoffAfterOdomAndSignal`**
-   Verifies transition to `TAKEOFF` happens only after both odometry and `/mission/start` are received.
-
-3. **`TransitionsToGotoEntranceAfterTakeoffHeightReached`**
-   Verifies `TAKEOFF -> GOTO_ENTRANCE` after reaching commanded takeoff altitude.
-
-4. **`TransitionsToExploreAfterReachingEntrance`**
-   Verifies `GOTO_ENTRANCE -> EXPLORE` when odometry reaches the configured cave-entrance target.
-
-5. **`LanternDetectionInterruptsExplore`**
-   Fast-forwards to `EXPLORE`, publishes lantern detections, and checks that the FSM enters `LANTERN_FOUND`.
-
-6. **`PlannerFailureWithoutActiveGoalIsIgnored`**
-   Verifies a `PLAN_FAILED` status does not force `REFINE_GOAL` when no goal is active.
-
-7. **`FullMissionLifecycle`**
-   Simulates an end-to-end mission flow and verifies transitions through takeoff, entrance, exploration, return, and landing phases.
-
----
-
-## Important maintenance note
-
-This README documents the **current test source** in `mission_fsm_node_test.cpp`.
-
-FSM runtime behavior in production has evolved (e.g., lantern completion threshold, macroplanning behavior). If tests are updated, keep this README synchronized with:
-
-- `ros2_ws/src/fsm/test/mission_fsm_node_test.cpp`, and
-- `ros2_ws/src/fsm/src/mission_fsm_node.cpp`.
+### 7. `FullMissionLifecycle`
+A comprehensive end-to-end simulation of the mission:
+1.  **Start**: Init -> Takeoff -> Goto Entrance -> Explore.
+2.  **Lantern Loop**: Simulates finding 4 distinct lanterns. Verifies the loop `EXPLORE` -> `LANTERN_FOUND` -> `EXPLORE`.
+3.  **Completion**: Verifies that after the 4th lantern, the FSM transitions to `RETURN`.
+4.  **End**: Simulates returning to start and landing.
