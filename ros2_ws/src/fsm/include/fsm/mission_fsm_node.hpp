@@ -132,6 +132,7 @@ private:
   int create_checkpoint_node(const geometry_msgs::msg::Point &pos, bool is_entrance = false,
                              bool is_provisional = false);
   void add_edge_between_nodes(int from_node, int to_node);
+  void remove_edge_between_nodes(int from_node, int to_node);
   void remove_checkpoint_node(int node_id);
   void simplify_checkpoint_graph();
   void fuse_nearby_checkpoint_nodes();
@@ -163,6 +164,12 @@ private:
   bool find_alternate_position_for_node(int node_id,
                                         geometry_msgs::msg::Point &candidate_out);
   void clear_node_relocation_state(int node_id);
+  std::pair<int, int> canonical_edge_key(int node_a, int node_b) const;
+  bool is_edge_blocked(int from_node, int to_node) const;
+  void mark_edge_blocked(int from_node, int to_node,
+                         const std::string &reason = "");
+  void mark_active_travel_edge_for_deletion(const std::string &reason);
+  bool set_active_travel_edge_to_target(int target_node_id);
   void mark_potential_node_unreachable_near(const geometry_msgs::msg::Point &pos);
   void set_single_edge_priority_target(int target_node_id);
   void clear_single_edge_priority_target();
@@ -182,6 +189,7 @@ private:
     int id = -1;
     geometry_msgs::msg::Point position;
     std::set<int> edges;
+    std::set<int> blocked_neighbors;
     bool is_dead_end = false;
     bool is_provisional = false;
     int visit_count = 0;
@@ -320,6 +328,9 @@ private:
   double goal_request_timeout_s_ = 4.0;
   std::unordered_map<int, geometry_msgs::msg::Point> node_relocation_origin_;
   std::unordered_map<int, int> node_relocation_attempts_;
+  std::set<std::pair<int, int>> deletable_edges_;
+  int active_travel_from_node_id_ = -1;
+  int active_travel_to_node_id_ = -1;
   int single_edge_travel_target_node_id_ = -1;
   int single_edge_priority_target_node_id_ = -1;
   int single_edge_punishment_target_node_id_ = -1;
